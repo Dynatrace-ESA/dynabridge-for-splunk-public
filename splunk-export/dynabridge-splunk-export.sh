@@ -1,0 +1,5003 @@
+#!/bin/bash
+
+################################################################################
+#
+#  DynaBridge Splunk Export Script v4.0.0
+#
+#  Complete Splunk Environment Data Collection for Migration to Dynatrace
+#
+#  This script collects configurations, dashboards, alerts, users, and usage
+#  analytics from your Splunk environment to enable migration planning and
+#  execution using the DynaBridge for Splunk application.
+#
+################################################################################
+#
+#  ╔═══════════════════════════════════════════════════════════════════════════╗
+#  ║                    PRE-FLIGHT CHECKLIST                                   ║
+#  ╠═══════════════════════════════════════════════════════════════════════════╣
+#  ║                                                                           ║
+#  ║  BEFORE RUNNING THIS SCRIPT, VERIFY THE FOLLOWING:                        ║
+#  ║                                                                           ║
+#  ║  □ 1. SYSTEM REQUIREMENTS                                                 ║
+#  ║     □ bash 4.0+ (REQUIRED) Run: bash --version                           ║
+#  ║       └─ Most Linux servers have this. macOS default bash is too old.    ║
+#  ║     □ curl installed   Run: curl --version                                ║
+#  ║     □ Python 3 available (uses Splunk's bundled Python if available)      ║
+#  ║       └─ Splunk includes Python - no separate install needed              ║
+#  ║     □ tar installed    Run: tar --version                                 ║
+#  ║     □ 500MB+ free      Run: df -h /tmp                                    ║
+#  ║                                                                           ║
+#  ║  □ 2. SPLUNK ACCESS                                                       ║
+#  ║     □ Know SPLUNK_HOME path (e.g., /opt/splunk)                          ║
+#  ║     □ Have admin username and password                                    ║
+#  ║     □ User has these capabilities:                                        ║
+#  ║       └─ search, admin_all_objects, list_settings, rest_properties_get    ║
+#  ║       └─ schedule_search (for analytics searches)                         ║
+#  ║                                                                           ║
+#  ║  □ 3. NETWORK ACCESS                                                      ║
+#  ║     □ Can reach Splunk REST API on port 8089                              ║
+#  ║       Test: curl -k https://localhost:8089/services/server/info           ║
+#  ║     □ No firewall blocking localhost:8089 or splunk-server:8089           ║
+#  ║                                                                           ║
+#  ║  □ 4. INTERNAL INDEXES (for usage analytics)                              ║
+#  ║     □ User can search index=_audit                                        ║
+#  ║     □ User can search index=_internal                                     ║
+#  ║     □ These indexes have 30+ days retention (ideal)                       ║
+#  ║       Test: | search index=_audit | head 1                                ║
+#  ║                                                                           ║
+#  ║  □ 5. INFORMATION TO GATHER BEFOREHAND                                    ║
+#  ║     □ Splunk admin username: ___________________                          ║
+#  ║     □ Splunk admin password: ___________________                          ║
+#  ║     □ Splunk host (if not localhost): ___________________                 ║
+#  ║     □ Splunk port (if not 8089): ___________________                      ║
+#  ║     □ Apps to export (or "all"): ___________________                      ║
+#  ║                                                                           ║
+#  ╚═══════════════════════════════════════════════════════════════════════════╝
+#
+#  QUICK TEST: Verify API access before running full export:
+#    curl -k -u admin:password https://localhost:8089/services/server/info
+#
+#  If the test fails, check:
+#    1. Splunk is running: $SPLUNK_HOME/bin/splunk status
+#    2. Port is correct: netstat -tlnp | grep 8089
+#    3. Credentials work: Try logging into Splunk Web
+#
+################################################################################
+
+set -o pipefail  # Fail on pipe errors
+# Note: We don't use set -e because we want to handle errors gracefully
+
+# =============================================================================
+# SCRIPT CONFIGURATION
+# =============================================================================
+
+SCRIPT_VERSION="4.1.0"
+SCRIPT_NAME="DynaBridge Splunk Export"
+
+# ANSI color codes
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+MAGENTA='\033[0;35m'
+WHITE='\033[1;37m'
+GRAY='\033[0;90m'
+NC='\033[0m' # No Color
+BOLD='\033[1m'
+DIM='\033[2m'
+
+# Box drawing characters
+BOX_TL="╔"
+BOX_TR="╗"
+BOX_BL="╚"
+BOX_BR="╝"
+BOX_H="═"
+BOX_V="║"
+BOX_T="╠"
+BOX_B="╣"
+
+# =============================================================================
+# GLOBAL VARIABLES
+# =============================================================================
+
+SPLUNK_HOME=""
+SPLUNK_USER="${SPLUNK_USER:-}"
+# Preserve SPLUNK_PASSWORD from environment if set (common in container deployments)
+SPLUNK_PASSWORD="${SPLUNK_PASSWORD:-}"
+SPLUNK_HOST="localhost"
+SPLUNK_PORT="8089"
+EXPORT_DIR=""
+EXPORT_NAME=""
+TIMESTAMP=""
+LOG_FILE=""
+
+# Environment detection
+SPLUNK_FLAVOR=""           # enterprise, uf, hf
+SPLUNK_ARCHITECTURE=""     # standalone, distributed, cloud
+SPLUNK_ROLE=""            # search_head, indexer, forwarder, etc.
+IS_SHC_MEMBER=false
+IS_SHC_CAPTAIN=false
+IS_IDX_CLUSTER=false
+IS_CLOUD=false
+
+# Collection options
+SELECTED_APPS=()
+EXPORT_ALL_APPS=true
+COLLECT_CONFIGS=true
+COLLECT_DASHBOARDS=true
+COLLECT_ALERTS=true
+COLLECT_RBAC=true
+COLLECT_USAGE=true
+COLLECT_INDEXES=true
+COLLECT_LOOKUPS=false
+COLLECT_AUDIT=false
+ANONYMIZE_DATA=true
+AUTO_CONFIRM=false
+USAGE_PERIOD="30d"
+
+# Rate limiting (to avoid impacting Splunk performance)
+API_DELAY_SECONDS=0.25     # Delay between API calls (seconds) - 250ms
+MAX_CONCURRENT_SEARCHES=1  # Don't run multiple searches in parallel
+SEARCH_POLL_INTERVAL=1     # How often to check if search is done (seconds)
+
+# Anonymization mappings (populated at runtime)
+declare -A EMAIL_MAP
+declare -A HOST_MAP
+declare -A WEBHOOK_MAP
+declare -A APIKEY_MAP
+declare -A SLACK_CHANNEL_MAP
+declare -A USERNAME_MAP
+ANON_EMAIL_COUNTER=0
+ANON_HOST_COUNTER=0
+ANON_WEBHOOK_COUNTER=0
+ANON_APIKEY_COUNTER=0
+ANON_SLACK_COUNTER=0
+ANON_USERNAME_COUNTER=0
+
+# Statistics
+STATS_APPS=0
+STATS_DASHBOARDS=0
+STATS_DASHBOARDS_XML=0  # Fallback count from XML files (used if REST API unavailable)
+STATS_ALERTS=0
+STATS_USERS=0
+STATS_INDEXES=0
+STATS_ERRORS=0
+
+# Timing
+EXPORT_START_TIME=0
+EXPORT_END_TIME=0
+
+# =============================================================================
+# UTILITY FUNCTIONS
+# =============================================================================
+
+# Print a horizontal line
+print_line() {
+  local char="${1:-─}"
+  local width="${2:-72}"
+  printf '%*s\n' "$width" '' | tr ' ' "$char"
+}
+
+# Get hostname with multiple fallbacks (for containers without hostname command)
+get_hostname() {
+  local mode="${1:-short}"  # short, full, or fqdn
+
+  if [ "$mode" = "short" ] || [ "$mode" = "s" ]; then
+    # Try multiple methods for short hostname
+    hostname -s 2>/dev/null || \
+    cat /etc/hostname 2>/dev/null | cut -d. -f1 || \
+    echo "$HOSTNAME" | cut -d. -f1 || \
+    cat /proc/sys/kernel/hostname 2>/dev/null | cut -d. -f1 || \
+    echo "splunk"
+  elif [ "$mode" = "fqdn" ] || [ "$mode" = "f" ]; then
+    # Try multiple methods for FQDN
+    hostname -f 2>/dev/null || \
+    cat /etc/hostname 2>/dev/null || \
+    echo "$HOSTNAME" || \
+    cat /proc/sys/kernel/hostname 2>/dev/null || \
+    echo "splunk.local"
+  else
+    # Default: try hostname command first, then fallbacks
+    hostname 2>/dev/null || \
+    cat /etc/hostname 2>/dev/null || \
+    echo "$HOSTNAME" || \
+    cat /proc/sys/kernel/hostname 2>/dev/null || \
+    echo "splunk"
+  fi
+}
+
+# =============================================================================
+# PYTHON JSON HELPER FUNCTIONS (replaces jq dependency)
+# =============================================================================
+# These functions use Python (Splunk's bundled or system) for JSON processing
+# to avoid requiring jq installation on customer servers.
+
+# Global variable for Python command (set during prerequisites check)
+PYTHON_CMD=""
+
+# Get a value from a JSON file
+# Usage: json_get "file.json" ".field.subfield" [default]
+json_get() {
+  local file="$1"
+  local path="$2"
+  local default="${3:-}"
+
+  if [ ! -f "$file" ]; then
+    echo "$default"
+    return
+  fi
+
+  $PYTHON_CMD -c "
+import json
+import sys
+
+try:
+    with open('$file', 'r') as f:
+        data = json.load(f)
+
+    # Parse the path (e.g., '.results[0].field' or '.results[:10]')
+    path = '''$path'''.strip()
+    if path.startswith('.'):
+        path = path[1:]
+
+    result = data
+    for part in path.replace('][', '.').replace('[', '.').replace(']', '').split('.'):
+        if not part:
+            continue
+        if ':' in part:
+            # Handle slicing like [:10]
+            start, end = part.split(':')
+            start = int(start) if start else None
+            end = int(end) if end else None
+            result = result[start:end]
+        elif part.isdigit():
+            result = result[int(part)]
+        else:
+            result = result.get(part, None) if isinstance(result, dict) else None
+            if result is None:
+                print('''$default''' or '[]' if '''$default''' == '' else '''$default''')
+                sys.exit(0)
+
+    if isinstance(result, (dict, list)):
+        print(json.dumps(result))
+    elif result is None:
+        print('''$default''' if '''$default''' else 'null')
+    else:
+        print(result)
+except Exception as e:
+    print('''$default''' if '''$default''' else '[]')
+" 2>/dev/null
+}
+
+# Get array length from JSON file
+# Usage: json_length "file.json" ".results"
+json_length() {
+  local file="$1"
+  local path="${2:-.}"
+
+  if [ ! -f "$file" ]; then
+    echo "0"
+    return
+  fi
+
+  $PYTHON_CMD -c "
+import json
+try:
+    with open('$file', 'r') as f:
+        data = json.load(f)
+    path = '''$path'''.strip()
+    if path.startswith('.'):
+        path = path[1:]
+    result = data
+    for part in path.split('.'):
+        if part:
+            result = result.get(part, []) if isinstance(result, dict) else []
+    print(len(result) if isinstance(result, list) else 0)
+except:
+    print(0)
+" 2>/dev/null
+}
+
+# Build a JSON object from arguments
+# Usage: json_build key1 value1 key2 value2 ...
+json_build() {
+  $PYTHON_CMD -c "
+import json
+import sys
+
+args = sys.argv[1:]
+obj = {}
+i = 0
+while i < len(args) - 1:
+    key = args[i]
+    val = args[i + 1]
+    # Try to parse as JSON first (for nested objects, arrays, numbers, bools)
+    try:
+        obj[key] = json.loads(val)
+    except:
+        obj[key] = val
+    i += 2
+print(json.dumps(obj))
+" "$@" 2>/dev/null
+}
+
+# Append an object to a JSON array
+# Usage: echo '[]' | json_array_append '{"name": "test"}'
+json_array_append() {
+  local new_item="$1"
+
+  $PYTHON_CMD -c "
+import json
+import sys
+
+try:
+    arr = json.loads(sys.stdin.read())
+    item = json.loads('''$new_item''')
+    arr.append(item)
+    print(json.dumps(arr))
+except Exception as e:
+    print('[]')
+" 2>/dev/null
+}
+
+# Validate and pretty-print JSON file
+# Usage: json_format "file.json"
+json_format() {
+  local file="$1"
+
+  $PYTHON_CMD -c "
+import json
+try:
+    with open('$file', 'r') as f:
+        data = json.load(f)
+    with open('$file', 'w') as f:
+        json.dump(data, f, indent=2)
+    print('valid')
+except Exception as e:
+    print('invalid: ' + str(e))
+" 2>/dev/null
+}
+
+# Escape a string for JSON
+# Usage: json_escape "string with \"quotes\""
+json_escape() {
+  local str="$1"
+  $PYTHON_CMD -c "
+import json
+print(json.dumps('''$str'''))
+" 2>/dev/null
+}
+
+# Build apps JSON array for manifest
+# Usage: build_apps_json "app1" "app2" "app3"
+build_apps_json() {
+  local export_dir="$1"
+  shift
+  local apps=("$@")
+
+  $PYTHON_CMD -c "
+import json
+import os
+import re
+
+export_dir = '''$export_dir'''
+apps = '''${apps[*]}'''.split()
+
+result = []
+for app in apps:
+    app_dashboards = 0
+    app_alerts = 0
+    app_saved = 0
+    has_props = False
+    has_transforms = False
+    has_lookups = False
+
+    # Count dashboards
+    for dash_dir in ['default/data/ui/views', 'local/data/ui/views']:
+        path = os.path.join(export_dir, app, dash_dir)
+        if os.path.isdir(path):
+            app_dashboards += len([f for f in os.listdir(path) if f.endswith('.xml')])
+
+    # Count alerts and saved searches
+    for conf_dir in ['default', 'local']:
+        ss_path = os.path.join(export_dir, app, conf_dir, 'savedsearches.conf')
+        if os.path.isfile(ss_path):
+            with open(ss_path, 'r') as f:
+                content = f.read()
+                app_alerts += len(re.findall(r'alert\.track', content))
+                app_saved += len(re.findall(r'^\[', content, re.MULTILINE))
+
+        if os.path.isfile(os.path.join(export_dir, app, conf_dir, 'props.conf')):
+            has_props = True
+        if os.path.isfile(os.path.join(export_dir, app, conf_dir, 'transforms.conf')):
+            has_transforms = True
+
+    if os.path.isdir(os.path.join(export_dir, app, 'lookups')):
+        has_lookups = True
+
+    result.append({
+        'name': app,
+        'dashboards': app_dashboards,
+        'alerts': app_alerts,
+        'saved_searches': app_saved,
+        'has_props': has_props,
+        'has_transforms': has_transforms,
+        'has_lookups': has_lookups
+    })
+
+print(json.dumps(result))
+" 2>/dev/null || echo "[]"
+}
+
+# Build usage intelligence JSON for manifest
+# Usage: build_usage_intel_json "$EXPORT_DIR"
+build_usage_intel_json() {
+  local export_dir="$1"
+
+  $PYTHON_CMD -c "
+import json
+import os
+
+export_dir = '''$export_dir'''
+analytics_dir = os.path.join(export_dir, '_usage_analytics')
+
+def safe_get(file_path, key_path, default):
+    \"\"\"Safely get a value from a JSON file.\"\"\"
+    try:
+        if not os.path.isfile(file_path):
+            return default
+        with open(file_path, 'r') as f:
+            data = json.load(f)
+        result = data
+        for key in key_path.split('.'):
+            if key.startswith('[') and key.endswith(']'):
+                idx = key[1:-1]
+                if ':' in idx:
+                    start, end = idx.split(':')
+                    start = int(start) if start else None
+                    end = int(end) if end else None
+                    result = result[start:end]
+                else:
+                    result = result[int(idx)]
+            else:
+                result = result.get(key, default)
+        return result
+    except:
+        return default
+
+def safe_len(file_path, key='results'):
+    \"\"\"Safely get length of results array.\"\"\"
+    try:
+        if not os.path.isfile(file_path):
+            return 0
+        with open(file_path, 'r') as f:
+            data = json.load(f)
+        return len(data.get(key, []))
+    except:
+        return 0
+
+if not os.path.isdir(analytics_dir):
+    print('{}')
+else:
+    result = {
+        'summary': {
+            'dashboards_never_viewed': safe_len(os.path.join(analytics_dir, 'dashboards_never_viewed.json')),
+            'alerts_never_fired': safe_len(os.path.join(analytics_dir, 'alerts_never_fired.json')),
+            'users_inactive_30d': safe_len(os.path.join(analytics_dir, 'users_inactive.json')),
+            'alerts_with_failures': safe_len(os.path.join(analytics_dir, 'alerts_failed.json'))
+        },
+        'volume': {
+            'avg_daily_gb': safe_get(os.path.join(analytics_dir, 'daily_volume_summary.json'), 'results.[0].avg_daily_gb', 0),
+            'peak_daily_gb': safe_get(os.path.join(analytics_dir, 'daily_volume_summary.json'), 'results.[0].peak_daily_gb', 0),
+            'total_30d_gb': safe_get(os.path.join(analytics_dir, 'daily_volume_summary.json'), 'results.[0].total_30d_gb', 0),
+            'top_indexes_by_volume': safe_get(os.path.join(analytics_dir, 'top_indexes_by_volume.json'), 'results.[:10]', []),
+            'top_sourcetypes_by_volume': safe_get(os.path.join(analytics_dir, 'top_sourcetypes_by_volume.json'), 'results.[:10]', []),
+            'top_hosts_by_volume': safe_get(os.path.join(analytics_dir, 'top_hosts_by_volume.json'), 'results.[:10]', []),
+            'note': 'See _usage_analytics/daily_volume_*.json for full daily breakdown'
+        },
+        'ingestion_infrastructure': {
+            'summary': {
+                'total_forwarding_hosts': safe_get(os.path.join(analytics_dir, 'ingestion_infrastructure/summary.json'), 'results.[0].total_forwarding_hosts', 0),
+                'daily_ingestion_gb': safe_get(os.path.join(analytics_dir, 'ingestion_infrastructure/summary.json'), 'results.[0].daily_avg_gb', 0),
+                'hec_enabled': safe_get(os.path.join(analytics_dir, 'ingestion_infrastructure/hec_usage.json'), 'results.[0].token_count', 0) > 0,
+                'hec_daily_gb': safe_get(os.path.join(analytics_dir, 'ingestion_infrastructure/hec_usage.json'), 'results.[0].daily_avg_gb', 0)
+            },
+            'by_connection_type': safe_get(os.path.join(analytics_dir, 'ingestion_infrastructure/by_connection_type.json'), 'results', []),
+            'by_input_method': safe_get(os.path.join(analytics_dir, 'ingestion_infrastructure/by_input_method.json'), 'results', []),
+            'by_sourcetype_category': safe_get(os.path.join(analytics_dir, 'ingestion_infrastructure/by_sourcetype_category.json'), 'results', []),
+            'note': 'See _usage_analytics/ingestion_infrastructure/ for detailed breakdown'
+        },
+        'prioritization': {
+            'top_dashboards': safe_get(os.path.join(analytics_dir, 'dashboard_views_top100.json'), 'results.[:10]', []),
+            'top_users': safe_get(os.path.join(analytics_dir, 'users_most_active.json'), 'results.[:10]', []),
+            'top_alerts': safe_get(os.path.join(analytics_dir, 'alerts_most_fired.json'), 'results.[:10]', []),
+            'top_sourcetypes': safe_get(os.path.join(analytics_dir, 'sourcetypes_searched.json'), 'results.[:10]', []),
+            'top_indexes': safe_get(os.path.join(analytics_dir, 'indexes_searched.json'), 'results.[:10]', [])
+        },
+        'elimination_candidates': {
+            'dashboards_never_viewed_count': safe_len(os.path.join(analytics_dir, 'dashboards_never_viewed.json')),
+            'alerts_never_fired_count': safe_len(os.path.join(analytics_dir, 'alerts_never_fired.json')),
+            'note': 'See _usage_analytics/ for full lists of candidates'
+        }
+    }
+    print(json.dumps(result))
+" 2>/dev/null || echo "{}"
+}
+
+# Get host IPs as JSON array (with fallbacks for containers)
+# Usage: get_host_ips_json
+get_host_ips_json() {
+  $PYTHON_CMD -c "
+import json
+import subprocess
+import socket
+
+ips = []
+try:
+    # Method 1: hostname -I (Linux)
+    result = subprocess.run(['hostname', '-I'], capture_output=True, text=True, timeout=5)
+    if result.returncode == 0 and result.stdout.strip():
+        ips = [ip.strip() for ip in result.stdout.split() if ip.strip()][:5]
+except:
+    pass
+
+if not ips:
+    try:
+        # Method 2: ip addr (Linux containers)
+        result = subprocess.run(['ip', 'addr', 'show'], capture_output=True, text=True, timeout=5)
+        if result.returncode == 0:
+            import re
+            ips = re.findall(r'inet (\d+\.\d+\.\d+\.\d+)', result.stdout)
+            ips = [ip for ip in ips if ip != '127.0.0.1'][:5]
+    except:
+        pass
+
+if not ips:
+    try:
+        # Method 3: Socket connection (works anywhere)
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(('8.8.8.8', 80))
+        ips = [s.getsockname()[0]]
+        s.close()
+    except:
+        pass
+
+print(json.dumps(ips if ips else []))
+" 2>/dev/null || echo "[]"
+}
+
+# Iterate over JSON array entries and output each as a line
+# Usage: json_iterate "file.json" ".entry"
+json_iterate() {
+  local file="$1"
+  local path="${2:-.}"
+
+  $PYTHON_CMD -c "
+import json
+try:
+    with open('$file', 'r') as f:
+        data = json.load(f)
+    path = '''$path'''.strip()
+    if path.startswith('.'):
+        path = path[1:]
+    result = data
+    for part in path.split('.'):
+        if part:
+            result = result.get(part, []) if isinstance(result, dict) else []
+    for item in result:
+        print(json.dumps(item))
+except:
+    pass
+" 2>/dev/null
+}
+
+# =============================================================================
+# PROGRESS BAR AND HISTOGRAM FUNCTIONS (Scale-aware for 1000s of items)
+# =============================================================================
+
+# Global progress tracking
+PROGRESS_START_TIME=0
+PROGRESS_CURRENT=0
+PROGRESS_TOTAL=0
+PROGRESS_LABEL=""
+
+# Spinner characters for visual feedback
+SPINNER_CHARS=('/' '-' '\' '|')
+SPINNER_INDEX=0
+
+# Get next spinner character
+get_spinner() {
+  echo "${SPINNER_CHARS[$SPINNER_INDEX]}"
+  SPINNER_INDEX=$(( (SPINNER_INDEX + 1) % 4 ))
+}
+
+# Initialize progress bar
+# Usage: progress_init "Collecting dashboards" 1500
+progress_init() {
+  PROGRESS_LABEL="$1"
+  PROGRESS_TOTAL="$2"
+  PROGRESS_CURRENT=0
+  PROGRESS_START_TIME=$(date +%s)
+
+  # Show initial state
+  echo -e "\n${CYAN}┌─────────────────────────────────────────────────────────────────────┐${NC}"
+  echo -e "${CYAN}│${NC} ${WHITE}${PROGRESS_LABEL}${NC}"
+  echo -e "${CYAN}│${NC} ${GRAY}Total items: ${PROGRESS_TOTAL}${NC}"
+  echo -e "${CYAN}└─────────────────────────────────────────────────────────────────────┘${NC}"
+}
+
+# Update progress bar
+# Usage: progress_update 50
+progress_update() {
+  PROGRESS_CURRENT="$1"
+  local percent=0
+  local elapsed=$(( $(date +%s) - PROGRESS_START_TIME ))
+  local rate=0
+  local eta="calculating..."
+
+  if [ "$PROGRESS_TOTAL" -gt 0 ]; then
+    percent=$(( (PROGRESS_CURRENT * 100) / PROGRESS_TOTAL ))
+  fi
+
+  # Calculate rate and ETA
+  if [ "$elapsed" -gt 0 ] && [ "$PROGRESS_CURRENT" -gt 0 ]; then
+    rate=$(( PROGRESS_CURRENT / elapsed ))
+    if [ "$rate" -gt 0 ]; then
+      local remaining=$(( PROGRESS_TOTAL - PROGRESS_CURRENT ))
+      local eta_seconds=$(( remaining / rate ))
+      if [ "$eta_seconds" -lt 60 ]; then
+        eta="${eta_seconds}s"
+      elif [ "$eta_seconds" -lt 3600 ]; then
+        eta="$(( eta_seconds / 60 ))m $(( eta_seconds % 60 ))s"
+      else
+        eta="$(( eta_seconds / 3600 ))h $(( (eta_seconds % 3600) / 60 ))m"
+      fi
+    fi
+  fi
+
+  # Build progress bar (50 chars wide)
+  local bar_width=50
+  local filled=$(( (percent * bar_width) / 100 ))
+  local empty=$(( bar_width - filled ))
+  local bar=""
+
+  for ((i=0; i<filled; i++)); do bar+="█"; done
+  for ((i=0; i<empty; i++)); do bar+="░"; done
+
+  # Print progress line (overwrite previous)
+  printf "\r${CYAN}│${NC} ${GREEN}%s${NC} %3d%% [%d/%d] ${GRAY}ETA: %s${NC}   " \
+    "$bar" "$percent" "$PROGRESS_CURRENT" "$PROGRESS_TOTAL" "$eta"
+}
+
+# Mark individual task as complete (shows checkmark and clears progress line)
+task_complete() {
+  local task_name="${1:-Task}"
+  printf "\r${GREEN}✓${NC} %s ${GRAY}done${NC}                                                              \n" "$task_name"
+}
+
+# =============================================================================
+# ITEM-LEVEL PROGRESS WITH SPINNER (for showing progress within each item)
+# =============================================================================
+
+# Show item progress with spinner and per-item percentage
+# Usage: item_progress_show "app: SplunkForwarder" 50 100 3 21
+# Args: item_name, item_current, item_total, overall_current, overall_total
+item_progress_show() {
+  local item_name="$1"
+  local item_current="${2:-0}"
+  local item_total="${3:-100}"
+  local overall_current="${4:-0}"
+  local overall_total="${5:-1}"
+
+  local spinner=$(get_spinner)
+  local item_percent=0
+  local overall_percent=0
+
+  if [ "$item_total" -gt 0 ]; then
+    item_percent=$(( (item_current * 100) / item_total ))
+  fi
+
+  if [ "$overall_total" -gt 0 ]; then
+    overall_percent=$(( (overall_current * 100) / overall_total ))
+  fi
+
+  # Build item progress bar (30 chars wide)
+  local bar_width=30
+  local filled=$(( (item_percent * bar_width) / 100 ))
+  local empty=$(( bar_width - filled ))
+  local bar=""
+
+  for ((i=0; i<filled; i++)); do bar+="█"; done
+  for ((i=0; i<empty; i++)); do bar+="░"; done
+
+  # Calculate ETA
+  local elapsed=$(( $(date +%s) - PROGRESS_START_TIME ))
+  local eta="calculating..."
+  if [ "$elapsed" -gt 0 ] && [ "$overall_current" -gt 0 ]; then
+    local rate=$(( overall_current * 1000 / elapsed ))  # items per 1000 seconds for precision
+    if [ "$rate" -gt 0 ]; then
+      local remaining=$(( overall_total - overall_current ))
+      local eta_seconds=$(( remaining * 1000 / rate ))
+      if [ "$eta_seconds" -lt 60 ]; then
+        eta="${eta_seconds}s"
+      elif [ "$eta_seconds" -lt 3600 ]; then
+        eta="$(( eta_seconds / 60 ))m $(( eta_seconds % 60 ))s"
+      else
+        eta="$(( eta_seconds / 3600 ))h $(( (eta_seconds % 3600) / 60 ))m"
+      fi
+    fi
+  fi
+
+  # Print: spinner item_name | progress_bar | item% [overall/total] ETA
+  printf "\r${YELLOW}%s${NC} %-30s ${CYAN}│${NC} ${GREEN}%s${NC} %3d%% ${GRAY}[%d/%d]${NC} ${GRAY}ETA: %s${NC}   " \
+    "$spinner" "$item_name" "$bar" "$item_percent" "$overall_current" "$overall_total" "$eta"
+}
+
+# Show item completion at 100% with checkmark
+# Usage: item_progress_complete "app: SplunkForwarder" 3 21
+item_progress_complete() {
+  local item_name="$1"
+  local overall_current="${2:-0}"
+  local overall_total="${3:-1}"
+
+  local overall_percent=0
+  if [ "$overall_total" -gt 0 ]; then
+    overall_percent=$(( (overall_current * 100) / overall_total ))
+  fi
+
+  # Full progress bar for completed item
+  local bar="██████████████████████████████"  # 30 filled chars
+
+  printf "\r${GREEN}✓${NC} %-30s ${CYAN}│${NC} ${GREEN}%s${NC} 100%% ${GRAY}[%d/%d]${NC}                    \n" \
+    "$item_name" "$bar" "$overall_current" "$overall_total"
+}
+
+# Simulate progress for an item with spinner animation
+# Usage: simulate_item_progress "app: SplunkForwarder" 3 21 [delay_ms]
+simulate_item_progress() {
+  local item_name="$1"
+  local overall_current="$2"
+  local overall_total="$3"
+  local delay="${4:-0.02}"  # Default 20ms between updates
+
+  # Simulate progress from 0 to 100 in steps
+  local steps=10
+  for ((step=1; step<=steps; step++)); do
+    local progress=$(( (step * 100) / steps ))
+    item_progress_show "$item_name" "$progress" "100" "$overall_current" "$overall_total"
+    sleep "$delay"
+  done
+
+  # Show completion
+  item_progress_complete "$item_name" "$overall_current" "$overall_total"
+}
+
+# Complete progress bar
+progress_complete() {
+  local elapsed=$(( $(date +%s) - PROGRESS_START_TIME ))
+  local rate=0
+
+  if [ "$elapsed" -gt 0 ] && [ "$PROGRESS_CURRENT" -gt 0 ]; then
+    rate=$(( PROGRESS_CURRENT / elapsed ))
+  fi
+
+  # Format elapsed time
+  local elapsed_str=""
+  if [ "$elapsed" -lt 60 ]; then
+    elapsed_str="${elapsed}s"
+  elif [ "$elapsed" -lt 3600 ]; then
+    elapsed_str="$(( elapsed / 60 ))m $(( elapsed % 60 ))s"
+  else
+    elapsed_str="$(( elapsed / 3600 ))h $(( (elapsed % 3600) / 60 ))m"
+  fi
+
+  printf "\r${CYAN}│${NC} ${GREEN}████████████████████████████████████████████████████${NC} 100%% [%d/%d]      \n" \
+    "$PROGRESS_TOTAL" "$PROGRESS_TOTAL"
+  echo -e "${CYAN}│${NC} ${GREEN}✓ Completed in ${elapsed_str}${NC} (${rate} items/sec)"
+  echo -e "${CYAN}└─────────────────────────────────────────────────────────────────────┘${NC}"
+}
+
+# Show histogram of item distribution
+# Usage: show_histogram "Apps by Dashboard Count" "app1:50" "app2:120" "app3:30" ...
+show_histogram() {
+  local title="$1"
+  shift
+  local items=("$@")
+  local max_value=0
+  local max_label_len=0
+
+  # Find max value and label length
+  for item in "${items[@]}"; do
+    local label="${item%%:*}"
+    local value="${item##*:}"
+    if [ "$value" -gt "$max_value" ]; then
+      max_value="$value"
+    fi
+    if [ "${#label}" -gt "$max_label_len" ]; then
+      max_label_len="${#label}"
+    fi
+  done
+
+  # Cap label length
+  if [ "$max_label_len" -gt 25 ]; then
+    max_label_len=25
+  fi
+
+  echo ""
+  echo -e "${WHITE}$title${NC}"
+  print_line "─" 70
+
+  # Draw histogram bars
+  local bar_max=40
+  for item in "${items[@]}"; do
+    local label="${item%%:*}"
+    local value="${item##*:}"
+    local bar_len=0
+
+    if [ "$max_value" -gt 0 ]; then
+      bar_len=$(( (value * bar_max) / max_value ))
+    fi
+
+    # Truncate label if needed
+    if [ "${#label}" -gt "$max_label_len" ]; then
+      label="${label:0:$((max_label_len-2))}.."
+    fi
+
+    # Build bar
+    local bar=""
+    for ((i=0; i<bar_len; i++)); do bar+="▓"; done
+
+    # Color based on size
+    local color="$GREEN"
+    if [ "$value" -gt 100 ]; then color="$YELLOW"; fi
+    if [ "$value" -gt 500 ]; then color="$RED"; fi
+
+    printf "  %-${max_label_len}s │ ${color}%-${bar_max}s${NC} %5d\n" "$label" "$bar" "$value"
+  done
+
+  print_line "─" 70
+}
+
+# Show scale warning for large environments
+show_scale_warning() {
+  local item_type="$1"
+  local count="$2"
+  local threshold="$3"
+
+  if [ "$count" -gt "$threshold" ]; then
+    echo ""
+    echo -e "${YELLOW}╔══════════════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${YELLOW}║${NC}  ${WHITE}⚠  LARGE ENVIRONMENT DETECTED${NC}                                       ${YELLOW}║${NC}"
+    echo -e "${YELLOW}╠══════════════════════════════════════════════════════════════════════╣${NC}"
+    echo -e "${YELLOW}║${NC}  Found ${WHITE}${count} ${item_type}${NC} (threshold: ${threshold})                        ${YELLOW}║${NC}"
+    echo -e "${YELLOW}║${NC}                                                                        ${YELLOW}║${NC}"
+    echo -e "${YELLOW}║${NC}  This export may take ${WHITE}15-60 minutes${NC} depending on:                   ${YELLOW}║${NC}"
+    echo -e "${YELLOW}║${NC}    • Network latency to Splunk REST API                               ${YELLOW}║${NC}"
+    echo -e "${YELLOW}║${NC}    • Disk I/O speed                                                   ${YELLOW}║${NC}"
+    echo -e "${YELLOW}║${NC}    • Number of dashboards with complex queries                        ${YELLOW}║${NC}"
+    echo -e "${YELLOW}║${NC}                                                                        ${YELLOW}║${NC}"
+    echo -e "${YELLOW}║${NC}  ${CYAN}Progress bars will show estimated time remaining.${NC}                   ${YELLOW}║${NC}"
+    echo -e "${YELLOW}╚══════════════════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+  fi
+}
+
+# Print a box header
+print_box_header() {
+  local title="$1"
+  local width=72
+  local padding=$(( (width - ${#title} - 4) / 2 ))
+  echo ""
+  echo -e "${CYAN}${BOX_TL}$(printf '%*s' $width '' | tr ' ' "$BOX_H")${BOX_TR}${NC}"
+  echo -e "${CYAN}${BOX_V}${NC}$(printf '%*s' $padding '')  ${BOLD}${WHITE}$title${NC}  $(printf '%*s' $((width - padding - ${#title} - 4)) '')${CYAN}${BOX_V}${NC}"
+  echo -e "${CYAN}${BOX_T}$(printf '%*s' $width '' | tr ' ' "$BOX_H")${BOX_B}${NC}"
+}
+
+# Print a box content line
+print_box_line() {
+  local content="$1"
+  local width=72
+  local stripped=$(echo -e "$content" | sed 's/\x1b\[[0-9;]*m//g')
+  local padding=$((width - ${#stripped}))
+  if [ $padding -lt 0 ]; then padding=0; fi
+  echo -e "${CYAN}${BOX_V}${NC} $content$(printf '%*s' $padding '')${CYAN}${BOX_V}${NC}"
+}
+
+# Print a box footer
+print_box_footer() {
+  local width=72
+  echo -e "${CYAN}${BOX_BL}$(printf '%*s' $width '' | tr ' ' "$BOX_H")${BOX_BR}${NC}"
+}
+
+# Print an info box with explanation
+print_info_box() {
+  local title="$1"
+  shift
+  print_box_header "$title"
+  for line in "$@"; do
+    print_box_line "$line"
+  done
+  print_box_footer
+}
+
+# Print success message
+success() {
+  echo -e "${GREEN}✓${NC} $1"
+  log "SUCCESS: $1"
+}
+
+# Print error message
+error() {
+  echo -e "${RED}✗${NC} $1"
+  log "ERROR: $1"
+  ((STATS_ERRORS++))
+}
+
+# Print warning message
+warning() {
+  echo -e "${YELLOW}⚠${NC} $1"
+  log "WARNING: $1"
+}
+
+# Print info message
+info() {
+  echo -e "${CYAN}→${NC} $1"
+  log "INFO: $1"
+}
+
+# Print progress
+progress() {
+  echo -e "${BLUE}◐${NC} $1"
+  log "PROGRESS: $1"
+}
+
+# Logging function
+log() {
+  if [ -n "$LOG_FILE" ] && [ -f "$LOG_FILE" ]; then
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$LOG_FILE"
+  fi
+}
+
+# Prompt for yes/no with default
+prompt_yn() {
+  local prompt="$1"
+  local default="${2:-Y}"
+  local answer
+
+  # If AUTO_CONFIRM is set, return based on default
+  if [ "$AUTO_CONFIRM" = true ]; then
+    echo -e "${DIM}[AUTO] $prompt: ${default}${NC}"
+    case "$default" in
+      Y|y|yes) return 0 ;;
+      *) return 1 ;;
+    esac
+  fi
+
+  if [ "$default" = "Y" ]; then
+    echo -ne "${YELLOW}$prompt (Y/n): ${NC}"
+  else
+    echo -ne "${YELLOW}$prompt (y/N): ${NC}"
+  fi
+
+  read -r answer
+  answer=${answer:-$default}
+  # Convert to lowercase (portable - works with bash 3.x on macOS)
+  answer=$(echo "$answer" | tr '[:upper:]' '[:lower:]')
+
+  case "$answer" in
+    y|yes) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Prompt for input with default
+prompt_input() {
+  local prompt="$1"
+  local default="$2"
+  local var_name="$3"
+  local answer
+
+  # Check if variable already has a value (from CLI or environment)
+  local current_value
+  eval "current_value=\$$var_name"
+
+  # If AUTO_CONFIRM is set, use existing value or default without prompting
+  if [ "$AUTO_CONFIRM" = true ]; then
+    if [ -n "$current_value" ]; then
+      echo -e "${DIM}[AUTO] $prompt: ${current_value}${NC}"
+      return
+    fi
+    echo -e "${DIM}[AUTO] $prompt: ${default}${NC}"
+    eval "$var_name='$default'"
+    return
+  fi
+
+  # If value already set, use it as the default
+  if [ -n "$current_value" ]; then
+    default="$current_value"
+  fi
+
+  if [ -n "$default" ]; then
+    echo -ne "${YELLOW}$prompt [${default}]: ${NC}"
+  else
+    echo -ne "${YELLOW}$prompt: ${NC}"
+  fi
+
+  read -r answer
+  answer=${answer:-$default}
+
+  eval "$var_name='$answer'"
+}
+
+# Prompt for password (hidden)
+prompt_password() {
+  local prompt="$1"
+  local var_name="$2"
+  local answer
+
+  # If AUTO_CONFIRM is set and password already provided via CLI, skip prompt
+  if [ "$AUTO_CONFIRM" = true ]; then
+    local current_value
+    eval "current_value=\$$var_name"
+    if [ -n "$current_value" ]; then
+      echo -e "${DIM}[AUTO] $prompt: ********${NC}"
+      return
+    fi
+  fi
+
+  echo -ne "${YELLOW}$prompt: ${NC}"
+  read -rs answer
+  echo ""
+
+  eval "$var_name='$answer'"
+}
+
+# Check if command exists
+command_exists() {
+  command -v "$1" &> /dev/null
+}
+
+# =============================================================================
+# BANNER AND WELCOME
+# =============================================================================
+
+show_banner() {
+  clear
+  echo ""
+  echo -e "${CYAN}╔══════════════════════════════════════════════════════════════════════════════╗${NC}"
+  echo -e "${CYAN}║${NC}                                                                                ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}  ${BOLD}${WHITE}██████╗ ██╗   ██╗███╗   ██╗ █████╗ ██████╗ ██████╗ ██╗██████╗  ██████╗ ███████╗${NC} ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}  ${BOLD}${WHITE}██╔══██╗╚██╗ ██╔╝████╗  ██║██╔══██╗██╔══██╗██╔══██╗██║██╔══██╗██╔════╝ ██╔════╝${NC} ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}  ${BOLD}${WHITE}██║  ██║ ╚████╔╝ ██╔██╗ ██║███████║██████╔╝██████╔╝██║██║  ██║██║  ███╗█████╗${NC}   ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}  ${BOLD}${WHITE}██║  ██║  ╚██╔╝  ██║╚██╗██║██╔══██║██╔══██╗██╔══██╗██║██║  ██║██║   ██║██╔══╝${NC}   ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}  ${BOLD}${WHITE}██████╔╝   ██║   ██║ ╚████║██║  ██║██████╔╝██║  ██║██║██████╔╝╚██████╔╝███████╗${NC} ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}  ${BOLD}${WHITE}╚═════╝    ╚═╝   ╚═╝  ╚═══╝╚═╝  ╚═╝╚═════╝ ╚═╝  ╚═╝╚═╝╚═════╝  ╚═════╝ ╚══════╝${NC} ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}                                                                                ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}                 ${BOLD}${MAGENTA}🏢  SPLUNK ENTERPRISE EXPORT SCRIPT  🏢${NC}                       ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}                                                                                ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}          ${DIM}Complete Data Collection for Migration to Dynatrace Gen3${NC}            ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}                        ${DIM}Version $SCRIPT_VERSION${NC}                                    ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}                                                                                ${CYAN}║${NC}"
+  echo -e "${CYAN}╚══════════════════════════════════════════════════════════════════════════════╝${NC}"
+  echo ""
+}
+
+show_welcome() {
+  print_info_box "WHAT THIS SCRIPT DOES" \
+    "" \
+    "This script collects data from your ${BOLD}Splunk Enterprise${NC} environment" \
+    "to prepare for migration to Dynatrace Gen3 Grail." \
+    "" \
+    "${BOLD}Data Collected:${NC}" \
+    "  ${GREEN}•${NC} Dashboards (Classic SimpleXML and Dashboard Studio)" \
+    "  ${GREEN}•${NC} Alerts and Saved Searches (with SPL queries)" \
+    "  ${GREEN}•${NC} Users, Roles, and RBAC configurations" \
+    "  ${GREEN}•${NC} Search Macros, Eventtypes, and Tags" \
+    "  ${GREEN}•${NC} Props.conf and Transforms.conf (field extractions)" \
+    "  ${GREEN}•${NC} Index configurations and volume statistics" \
+    "  ${GREEN}•${NC} Usage analytics (who uses what, how often)" \
+    "  ${GREEN}•${NC} Lookup tables and KV Store collections" \
+    "" \
+    "${BOLD}Output:${NC}" \
+    "  A .tar.gz archive compatible with DynaBridge for Splunk app"
+
+  print_info_box "IMPORTANT: THIS IS FOR SPLUNK ENTERPRISE ONLY" \
+    "" \
+    "${YELLOW}⚠  This script requires SSH/shell access to your Splunk server${NC}" \
+    "" \
+    "If you have ${BOLD}Splunk Cloud${NC} (Classic or Victoria Experience), please use:" \
+    "  ${GREEN}./dynabridge-splunk-cloud-export.sh${NC}" \
+    "" \
+    "This script reads configuration files directly from \$SPLUNK_HOME"
+
+  echo ""
+  echo -e "  ${WHITE}Documentation:${NC} See README-SPLUNK-ENTERPRISE.md for prerequisites"
+  echo ""
+  print_line "─" 78
+
+  echo ""
+  if ! prompt_yn "Ready to begin?"; then
+    echo ""
+    echo -e "${YELLOW}Export cancelled. Run the script again when ready.${NC}"
+    exit 0
+  fi
+
+  # Show pre-flight checklist after user confirms
+  show_preflight_checklist
+}
+
+# Pre-flight checklist - shows requirements BEFORE proceeding
+show_preflight_checklist() {
+  echo ""
+  echo -e "${CYAN}╔══════════════════════════════════════════════════════════════════════════════╗${NC}"
+  echo -e "${CYAN}║${NC}                     ${BOLD}${WHITE}PRE-FLIGHT CHECKLIST${NC}                                    ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}         ${DIM}Please confirm you have the following before continuing${NC}            ${CYAN}║${NC}"
+  echo -e "${CYAN}╠══════════════════════════════════════════════════════════════════════════════╣${NC}"
+  echo -e "${CYAN}║${NC}                                                                              ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}  ${BOLD}${GREEN}SHELL ACCESS:${NC}                                                              ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}    □  SSH access to Splunk server (or running locally on Splunk server)    ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}    □  User with read access to \$SPLUNK_HOME directory                      ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}    □  Root/sudo access (may be needed for some configs)                    ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}                                                                              ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}  ${BOLD}${GREEN}SPLUNK REST API ACCESS (Optional - for Usage Analytics):${NC}                  ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}    □  Splunk username with admin privileges                                ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}    □  Splunk password (for REST API searches)                              ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}    □  Access to _audit and _internal indexes                               ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}                                                                              ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}  ${BOLD}${GREEN}NETWORK REQUIREMENTS:${NC}                                                      ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}    □  Port 8089 accessible (for REST API - optional)                       ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}                                                                              ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}  ${BOLD}${GREEN}SYSTEM REQUIREMENTS:${NC}                                                       ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}    □  bash 4.0+ (Linux default - check with: bash --version)               ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}    □  curl installed                                                       ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}    □  Python 3 (for JSON parsing) - uses Splunk's bundled Python         ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}    □  tar installed                                                        ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}    □  ~500MB disk space for export                                         ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}                                                                              ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}  ${BOLD}${GREEN}INFORMATION TO GATHER:${NC}                                                     ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}    □  \$SPLUNK_HOME path (default: /opt/splunk)                              ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}    □  Splunk role (indexer, search head, etc.)                             ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}    □  Apps to export (or export all)                                       ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}                                                                              ${CYAN}║${NC}"
+  echo -e "${CYAN}╠══════════════════════════════════════════════════════════════════════════════╣${NC}"
+  echo -e "${CYAN}║${NC}  ${BOLD}${GREEN}🔒 DATA PRIVACY & SECURITY:${NC}                                                ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}                                                                              ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}  ${BOLD}We do NOT collect or export:${NC}                                              ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}    ${RED}✗${NC}  User passwords or password hashes                                    ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}    ${RED}✗${NC}  API tokens or session keys                                           ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}    ${RED}✗${NC}  Private keys or certificates                                         ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}    ${RED}✗${NC}  Your actual log data (only metadata/structure)                       ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}    ${RED}✗${NC}  SSL certificates or .pem files                                       ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}                                                                              ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}  ${BOLD}We automatically REDACT:${NC}                                                  ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}    ${GREEN}✓${NC}  password = [REDACTED] in all .conf files                             ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}    ${GREEN}✓${NC}  secret = [REDACTED] in outputs.conf                                  ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}    ${GREEN}✓${NC}  pass4SymmKey = [REDACTED] in server.conf                             ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}    ${GREEN}✓${NC}  sslPassword = [REDACTED] in inputs.conf                              ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}                                                                              ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}  ${BOLD}We DO collect (for migration):${NC}                                            ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}    ${CYAN}•${NC}  Usernames and role assignments (NOT passwords)                       ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}    ${CYAN}•${NC}  Dashboard/alert ownership (who created what)                         ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}    ${CYAN}•${NC}  Usage statistics (search counts, not search content)                 ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}    ${CYAN}•${NC}  .conf file structure (props, transforms, inputs, etc.)               ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}                                                                              ${CYAN}║${NC}"
+  echo -e "${CYAN}╠══════════════════════════════════════════════════════════════════════════════╣${NC}"
+  echo -e "${CYAN}║${NC}  ${BOLD}${MAGENTA}TIP:${NC} If you don't have all items, you can still proceed - the script     ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}       will verify each requirement and provide specific guidance.          ${CYAN}║${NC}"
+  echo -e "${CYAN}╚══════════════════════════════════════════════════════════════════════════════╝${NC}"
+  echo ""
+
+  # Quick system check
+  echo -e "  ${BOLD}Quick System Check:${NC}"
+
+  # Check bash version
+  local bash_major="${BASH_VERSINFO[0]:-0}"
+  if [ "$bash_major" -ge 4 ]; then
+    echo -e "    ${GREEN}✓${NC} bash: ${BASH_VERSION} (4.0+ required)"
+  else
+    echo -e "    ${RED}✗${NC} bash: ${BASH_VERSION:-unknown} - ${YELLOW}bash 4.0+ REQUIRED${NC}"
+    echo -e "      ${DIM}This script uses associative arrays (declare -A) which require bash 4.0+${NC}"
+  fi
+
+  # Check curl
+  if command -v curl &> /dev/null; then
+    echo -e "    ${GREEN}✓${NC} curl: $(curl --version 2>/dev/null | head -1 | cut -d' ' -f2)"
+  else
+    echo -e "    ${RED}✗${NC} curl: NOT INSTALLED"
+  fi
+
+  # Check Python (for JSON processing)
+  if [ -n "$PYTHON_CMD" ]; then
+    echo -e "    ${GREEN}✓${NC} Python: $($PYTHON_CMD --version 2>&1)"
+  elif [ -n "$SPLUNK_HOME" ] && [ -x "$SPLUNK_HOME/bin/python3" ]; then
+    echo -e "    ${GREEN}✓${NC} Python: $($SPLUNK_HOME/bin/python3 --version 2>&1) (Splunk bundled)"
+  elif command -v python3 &> /dev/null; then
+    echo -e "    ${GREEN}✓${NC} Python: $(python3 --version 2>&1)"
+  else
+    echo -e "    ${YELLOW}!${NC} Python: Using Splunk's bundled Python if available"
+  fi
+
+  # Check tar
+  if command -v tar &> /dev/null; then
+    echo -e "    ${GREEN}✓${NC} tar: available"
+  else
+    echo -e "    ${RED}✗${NC} tar: NOT INSTALLED"
+  fi
+
+  # Check SPLUNK_HOME
+  if [ -n "$SPLUNK_HOME" ] && [ -d "$SPLUNK_HOME" ]; then
+    echo -e "    ${GREEN}✓${NC} SPLUNK_HOME: $SPLUNK_HOME"
+  elif [ -d "/opt/splunk" ]; then
+    echo -e "    ${YELLOW}~${NC} SPLUNK_HOME: Not set, but /opt/splunk exists"
+  else
+    echo -e "    ${YELLOW}~${NC} SPLUNK_HOME: Not set (will prompt later)"
+  fi
+
+  echo ""
+  if ! prompt_yn "Ready to proceed?"; then
+    echo ""
+    echo -e "${YELLOW}Export cancelled. Install missing dependencies and try again.${NC}"
+    exit 0
+  fi
+}
+
+# =============================================================================
+# PREREQUISITES CHECK
+# =============================================================================
+
+check_prerequisites() {
+  print_box_header "CHECKING PREREQUISITES"
+  print_box_line ""
+  print_box_line "${WHITE}We need to verify your system has the required tools.${NC}"
+  print_box_line ""
+  print_box_footer
+
+  echo ""
+  local all_ok=true
+
+  # Check bash version
+  progress "Checking bash version..."
+  if [ "${BASH_VERSINFO[0]}" -ge 4 ]; then
+    success "Bash version ${BASH_VERSION} (4.0+ required)"
+  else
+    warning "Bash version ${BASH_VERSION} (4.0+ recommended, may work)"
+  fi
+
+  # Check curl
+  progress "Checking for curl (needed for REST API calls)..."
+  if command_exists curl; then
+    success "curl is installed"
+  else
+    error "curl is not installed"
+    echo -e "  ${GRAY}Install with: apt-get install curl  OR  yum install curl${NC}"
+    all_ok=false
+  fi
+
+  # Check tar
+  progress "Checking for tar (needed for archive creation)..."
+  if command_exists tar; then
+    success "tar is installed"
+  else
+    error "tar is not installed"
+    all_ok=false
+  fi
+
+  # Check gzip
+  progress "Checking for gzip (needed for compression)..."
+  if command_exists gzip; then
+    success "gzip is installed"
+  else
+    error "gzip is not installed"
+    all_ok=false
+  fi
+
+  # Check Python (uses Splunk's bundled Python or system Python)
+  progress "Checking for Python 3 (needed for JSON processing)..."
+  PYTHON_CMD=""
+  # First try Splunk's bundled Python (guaranteed to exist on Splunk servers)
+  if [ -n "$SPLUNK_HOME" ] && [ -x "$SPLUNK_HOME/bin/python3" ]; then
+    PYTHON_CMD="$SPLUNK_HOME/bin/python3"
+    local py_version=$("$PYTHON_CMD" --version 2>&1 | head -1)
+    success "Using Splunk's bundled Python: $py_version"
+  elif command_exists python3; then
+    PYTHON_CMD="python3"
+    local py_version=$(python3 --version 2>&1 | head -1)
+    success "Using system Python: $py_version"
+  elif command_exists python; then
+    # Check if python is Python 3
+    local py_ver=$(python --version 2>&1 | grep -oP 'Python \K[0-9]+')
+    if [ "$py_ver" = "3" ]; then
+      PYTHON_CMD="python"
+      local py_version=$(python --version 2>&1 | head -1)
+      success "Using system Python: $py_version"
+    fi
+  fi
+
+  if [ -z "$PYTHON_CMD" ]; then
+    error "Python 3 is not available"
+    echo ""
+    echo -e "  ${YELLOW}╔══════════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "  ${YELLOW}║${NC}  ${WHITE}PYTHON NOT FOUND:${NC}                                               ${YELLOW}║${NC}"
+    echo -e "  ${YELLOW}║${NC}                                                                  ${YELLOW}║${NC}"
+    echo -e "  ${YELLOW}║${NC}  Splunk's bundled Python was not found at:                       ${YELLOW}║${NC}"
+    echo -e "  ${YELLOW}║${NC}    \$SPLUNK_HOME/bin/python3                                      ${YELLOW}║${NC}"
+    echo -e "  ${YELLOW}║${NC}                                                                  ${YELLOW}║${NC}"
+    echo -e "  ${YELLOW}║${NC}  Make sure SPLUNK_HOME is set correctly, or install Python 3:   ${YELLOW}║${NC}"
+    echo -e "  ${YELLOW}║${NC}    ${CYAN}Ubuntu/Debian:${NC}  sudo apt-get install python3                 ${YELLOW}║${NC}"
+    echo -e "  ${YELLOW}║${NC}    ${CYAN}RHEL/CentOS:${NC}    sudo yum install python3                     ${YELLOW}║${NC}"
+    echo -e "  ${YELLOW}╚══════════════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+    all_ok=false
+  fi
+
+  # Check disk space
+  progress "Checking available disk space in /tmp..."
+  local free_space=$(df -m /tmp 2>/dev/null | awk 'NR==2 {print $4}')
+  if [ -n "$free_space" ] && [ "$free_space" -ge 500 ]; then
+    success "Sufficient disk space (${free_space}MB available, 500MB required)"
+  else
+    warning "Could not verify disk space. Ensure at least 500MB is free in /tmp"
+  fi
+
+  echo ""
+
+  if [ "$all_ok" = false ]; then
+    error "Some prerequisites are missing. Please install them and try again."
+    exit 1
+  fi
+
+  success "All prerequisites satisfied!"
+  echo ""
+}
+
+# =============================================================================
+# SPLUNK HOME DETECTION
+# =============================================================================
+
+detect_splunk_home() {
+  print_info_box "STEP 1: LOCATE SPLUNK INSTALLATION" \
+    "" \
+    "${WHITE}WHY WE NEED THIS:${NC}" \
+    "We need to know where Splunk is installed to read configuration" \
+    "files and access the Splunk CLI tools." \
+    "" \
+    "${WHITE}WHAT WE'LL DO:${NC}" \
+    "Automatically detect common Splunk installation paths, or ask" \
+    "you to provide the path if we can't find it."
+
+  echo ""
+  progress "Searching for Splunk installation..."
+
+  # Check environment variable first
+  if [ -n "${SPLUNK_HOME:-}" ] && [ -d "$SPLUNK_HOME" ]; then
+    SPLUNK_HOME="${SPLUNK_HOME}"
+    success "Found via \$SPLUNK_HOME environment variable: $SPLUNK_HOME"
+    return 0
+  fi
+
+  # Common installation paths
+  local paths=(
+    "/opt/splunk"
+    "/opt/splunkforwarder"
+    "/Applications/Splunk"
+    "/Applications/SplunkForwarder"
+    "$HOME/splunk"
+    "$HOME/splunkforwarder"
+    "/usr/local/splunk"
+  )
+
+  for path in "${paths[@]}"; do
+    if [ -d "$path/etc" ]; then
+      SPLUNK_HOME="$path"
+      success "Found Splunk installation: $SPLUNK_HOME"
+      return 0
+    fi
+  done
+
+  # Not found - ask user
+  echo ""
+  warning "Could not automatically detect Splunk installation"
+  echo ""
+  print_box_line "${WHITE}Please enter the path to your Splunk installation.${NC}"
+  print_box_line "This is typically /opt/splunk or /opt/splunkforwarder"
+  print_box_footer
+
+  while true; do
+    prompt_input "Enter SPLUNK_HOME path" "/opt/splunk" SPLUNK_HOME
+
+    if [ -d "$SPLUNK_HOME/etc" ]; then
+      success "Valid Splunk installation found: $SPLUNK_HOME"
+      return 0
+    else
+      error "Invalid path: $SPLUNK_HOME/etc does not exist"
+      echo ""
+    fi
+  done
+}
+
+# =============================================================================
+# SPLUNK FLAVOR DETECTION
+# =============================================================================
+
+detect_splunk_flavor() {
+  print_info_box "STEP 2: IDENTIFY SPLUNK DEPLOYMENT TYPE" \
+    "" \
+    "${WHITE}WHY WE NEED THIS:${NC}" \
+    "Different Splunk deployment types (Enterprise, Forwarder, Cloud)" \
+    "have different data available for export. We'll tailor the" \
+    "collection process based on what's available." \
+    "" \
+    "${WHITE}WHAT WE'LL CHECK:${NC}" \
+    "• Product type (Enterprise vs Universal Forwarder)" \
+    "• Architecture (Standalone vs Distributed vs Cloud)" \
+    "• Role (Search Head, Indexer, Forwarder, etc.)" \
+    "• Cluster membership (SHC, Indexer Cluster)"
+
+  echo ""
+  progress "Analyzing Splunk installation..."
+
+  # Check for Universal Forwarder
+  if [ -f "$SPLUNK_HOME/etc/splunk-launch.conf" ]; then
+    if grep -q "SPLUNK_ROLE=universalforwarder" "$SPLUNK_HOME/etc/splunk-launch.conf" 2>/dev/null; then
+      SPLUNK_FLAVOR="uf"
+      SPLUNK_ROLE="universal_forwarder"
+      info "Detected: Universal Forwarder"
+    fi
+  fi
+
+  # Check for splunkforwarder in path
+  if [[ "$SPLUNK_HOME" == *"splunkforwarder"* ]] && [ -z "$SPLUNK_FLAVOR" ]; then
+    SPLUNK_FLAVOR="uf"
+    SPLUNK_ROLE="universal_forwarder"
+    info "Detected: Universal Forwarder (based on path)"
+  fi
+
+  # If not UF, assume Enterprise
+  if [ -z "$SPLUNK_FLAVOR" ]; then
+    SPLUNK_FLAVOR="enterprise"
+    info "Detected: Splunk Enterprise"
+  fi
+
+  # Detect architecture and role
+  if [ "$SPLUNK_FLAVOR" = "enterprise" ]; then
+    local server_conf="$SPLUNK_HOME/etc/system/local/server.conf"
+
+    # Check for Search Head Cluster
+    if [ -f "$server_conf" ] && grep -q "\[shclustering\]" "$server_conf" 2>/dev/null; then
+      IS_SHC_MEMBER=true
+      SPLUNK_ARCHITECTURE="distributed"
+
+      # Check if captain
+      local shc_mode=$(grep -A5 "\[shclustering\]" "$server_conf" | grep "mode" | cut -d= -f2 | tr -d ' ')
+      if [ "$shc_mode" = "captain" ]; then
+        IS_SHC_CAPTAIN=true
+        SPLUNK_ROLE="shc_captain"
+        info "Detected: Search Head Cluster Captain"
+      else
+        SPLUNK_ROLE="shc_member"
+        info "Detected: Search Head Cluster Member"
+      fi
+    fi
+
+    # Check for Indexer Cluster
+    if [ -f "$server_conf" ] && grep -q "\[clustering\]" "$server_conf" 2>/dev/null; then
+      IS_IDX_CLUSTER=true
+      local cluster_mode=$(grep -A5 "\[clustering\]" "$server_conf" | grep "mode" | cut -d= -f2 | tr -d ' ')
+
+      case "$cluster_mode" in
+        master)
+          SPLUNK_ROLE="cluster_master"
+          info "Detected: Indexer Cluster Master/Manager"
+          ;;
+        slave)
+          SPLUNK_ROLE="indexer_peer"
+          info "Detected: Indexer Cluster Peer"
+          ;;
+      esac
+      SPLUNK_ARCHITECTURE="distributed"
+    fi
+
+    # Check for distributed search (search head)
+    if [ -f "$SPLUNK_HOME/etc/system/local/distsearch.conf" ]; then
+      if grep -q "servers" "$SPLUNK_HOME/etc/system/local/distsearch.conf" 2>/dev/null; then
+        SPLUNK_ARCHITECTURE="distributed"
+        if [ -z "$SPLUNK_ROLE" ]; then
+          SPLUNK_ROLE="search_head"
+          info "Detected: Search Head (Distributed)"
+        fi
+      fi
+    fi
+
+    # Check for Heavy Forwarder (no local indexes, has outputs)
+    if [ -f "$SPLUNK_HOME/etc/system/local/outputs.conf" ]; then
+      local has_indexes=$(ls -1 "$SPLUNK_HOME/var/lib/splunk/" 2>/dev/null | grep -v "^kvstore" | grep -v "^modinput" | wc -l)
+      if [ "$has_indexes" -le 2 ]; then
+        SPLUNK_FLAVOR="hf"
+        SPLUNK_ROLE="heavy_forwarder"
+        info "Detected: Heavy Forwarder"
+      fi
+    fi
+
+    # Check for Deployment Server
+    if [ -d "$SPLUNK_HOME/etc/deployment-apps" ]; then
+      local app_count=$(ls -1 "$SPLUNK_HOME/etc/deployment-apps/" 2>/dev/null | wc -l)
+      if [ "$app_count" -gt 0 ]; then
+        SPLUNK_ROLE="deployment_server"
+        info "Detected: Deployment Server (${app_count} deployment apps)"
+      fi
+    fi
+
+    # Check for Splunk Cloud indicators
+    if [ -f "$server_conf" ]; then
+      if grep -qi "splunkcloud.com" "$server_conf" 2>/dev/null; then
+        IS_CLOUD=true
+        SPLUNK_ARCHITECTURE="cloud"
+        warning "Detected: Splunk Cloud connection"
+        echo ""
+        print_info_box "SPLUNK CLOUD DETECTED" \
+          "" \
+          "${RED}This script does NOT support Splunk Cloud.${NC}" \
+          "" \
+          "Splunk Cloud (Classic and Victoria Experience) does not allow" \
+          "SSH access to the infrastructure, which this script requires." \
+          "" \
+          "For Splunk Cloud migrations, please contact the DynaBridge" \
+          "team for a REST API-only export solution." \
+          "" \
+          "If this is a hybrid environment with on-prem Search Heads" \
+          "connected to Splunk Cloud indexers, you may continue."
+
+        echo ""
+        if ! prompt_yn "Continue anyway (hybrid environment)?" "N"; then
+          echo ""
+          echo -e "${YELLOW}Export cancelled. Contact DynaBridge team for Cloud support.${NC}"
+          exit 0
+        fi
+      fi
+    fi
+
+    # Default to standalone if no architecture detected
+    if [ -z "$SPLUNK_ARCHITECTURE" ]; then
+      SPLUNK_ARCHITECTURE="standalone"
+      if [ -z "$SPLUNK_ROLE" ]; then
+        SPLUNK_ROLE="standalone"
+      fi
+      info "Detected: Standalone deployment"
+    fi
+  fi
+
+  # Get Splunk version
+  local version_file="$SPLUNK_HOME/etc/splunk.version"
+  local splunk_version="Unknown"
+  if [ -f "$version_file" ]; then
+    splunk_version=$(grep "VERSION" "$version_file" 2>/dev/null | cut -d= -f2)
+  fi
+
+  echo ""
+  print_box_header "DETECTED ENVIRONMENT"
+  print_box_line ""
+  print_box_line "  ${WHITE}Product:${NC}       Splunk ${SPLUNK_FLAVOR^}"
+  print_box_line "  ${WHITE}Version:${NC}       ${splunk_version}"
+  print_box_line "  ${WHITE}Role:${NC}          ${SPLUNK_ROLE//_/ }"
+  print_box_line "  ${WHITE}Architecture:${NC}  ${SPLUNK_ARCHITECTURE^}"
+  print_box_line "  ${WHITE}SPLUNK_HOME:${NC}   ${SPLUNK_HOME}"
+  print_box_line ""
+
+  if [ "$IS_SHC_MEMBER" = true ]; then
+    print_box_line "  ${CYAN}Search Head Cluster:${NC} Yes"
+    if [ "$IS_SHC_CAPTAIN" = true ]; then
+      print_box_line "  ${CYAN}SHC Role:${NC} Captain ${GREEN}(optimal for export)${NC}"
+    else
+      print_box_line "  ${CYAN}SHC Role:${NC} Member ${YELLOW}(consider exporting from Captain)${NC}"
+    fi
+  fi
+
+  if [ "$IS_IDX_CLUSTER" = true ]; then
+    print_box_line "  ${CYAN}Indexer Cluster:${NC} Yes"
+  fi
+
+  print_box_line ""
+  print_box_footer
+
+  # Show warnings for limited environments
+  if [ "$SPLUNK_FLAVOR" = "uf" ]; then
+    echo ""
+    print_info_box "LIMITED EXPORT AVAILABLE" \
+      "" \
+      "${YELLOW}This is a Universal Forwarder installation.${NC}" \
+      "" \
+      "Universal Forwarders have limited data available:" \
+      "  ${GREEN}✓${NC} inputs.conf (data sources being collected)" \
+      "  ${GREEN}✓${NC} outputs.conf (forwarding destinations)" \
+      "  ${GREEN}✓${NC} props.conf (local parsing rules, if any)" \
+      "" \
+      "  ${RED}✗${NC} Dashboards (UF has no search capability)" \
+      "  ${RED}✗${NC} Alerts (UF cannot run searches)" \
+      "  ${RED}✗${NC} Users/RBAC (minimal authentication)" \
+      "  ${RED}✗${NC} Usage analytics (no search history)" \
+      "" \
+      "${WHITE}RECOMMENDATION:${NC} For full export, run this script on your" \
+      "Search Head instead."
+
+    echo ""
+    if ! prompt_yn "Continue with limited forwarder export?"; then
+      echo ""
+      echo -e "${YELLOW}Export cancelled.${NC}"
+      exit 0
+    fi
+  fi
+
+  if [ "$IS_SHC_MEMBER" = true ] && [ "$IS_SHC_CAPTAIN" = false ]; then
+    echo ""
+    print_info_box "SEARCH HEAD CLUSTER NOTICE" \
+      "" \
+      "${YELLOW}This is an SHC Member, not the Captain.${NC}" \
+      "" \
+      "While we can export from this member, some shared knowledge" \
+      "objects may be incomplete. For the most complete export," \
+      "we recommend running on the SHC Captain." \
+      "" \
+      "To find the Captain:" \
+      "  ${CYAN}\$SPLUNK_HOME/bin/splunk show shcluster-status${NC}"
+
+    echo ""
+    if ! prompt_yn "Continue exporting from this SHC member?"; then
+      echo ""
+      echo -e "${YELLOW}Export cancelled. Please run on the SHC Captain.${NC}"
+      exit 0
+    fi
+  fi
+
+  echo ""
+  if prompt_yn "Is the detected environment correct?" "Y"; then
+    success "Environment confirmed"
+  else
+    echo ""
+    warning "If the detection is incorrect, the export may be incomplete."
+    if ! prompt_yn "Continue anyway?" "Y"; then
+      exit 0
+    fi
+  fi
+}
+
+# =============================================================================
+# APPLICATION SELECTION
+# =============================================================================
+
+select_applications() {
+  print_info_box "STEP 3: SELECT APPLICATIONS TO EXPORT" \
+    "" \
+    "${WHITE}WHY WE ASK:${NC}" \
+    "Splunk organizes content into \"Apps\" - containers that hold" \
+    "dashboards, alerts, saved searches, and configurations. We need" \
+    "to know which apps contain the content you want to migrate." \
+    "" \
+    "${WHITE}WHAT WE COLLECT FROM EACH APP:${NC}" \
+    "  • Dashboards (Classic XML and Dashboard Studio JSON)" \
+    "  • Alerts and Scheduled Searches (savedsearches.conf)" \
+    "  • Field Extractions (props.conf, transforms.conf)" \
+    "  • Lookup Tables (.csv files)" \
+    "  • Search Macros (macros.conf)" \
+    "  • Event Classifications (eventtypes.conf, tags.conf)" \
+    "" \
+    "${WHITE}RECOMMENDATION:${NC}" \
+    "For a complete migration assessment, we recommend exporting" \
+    "${GREEN}ALL apps${NC}. This gives DynaBridge the full picture."
+
+  echo ""
+
+  # Discover apps
+  progress "Discovering installed applications..."
+
+  local apps_dir="$SPLUNK_HOME/etc/apps"
+  declare -a all_apps=()
+  declare -A app_dashboards=()
+  declare -A app_alerts=()
+
+  if [ -d "$apps_dir" ]; then
+    for app_path in "$apps_dir"/*; do
+      if [ -d "$app_path" ]; then
+        local app_name=$(basename "$app_path")
+
+        # Skip internal apps (start with _)
+        if [[ "$app_name" =~ ^_ ]]; then
+          continue
+        fi
+
+        # Skip framework/system apps
+        if [[ "$app_name" =~ ^(framework|appsbrowser|introspection_generator_addon|legacy|learned|sample_app|gettingstarted)$ ]]; then
+          continue
+        fi
+
+        all_apps+=("$app_name")
+
+        # Count dashboards (use ls instead of find for container compatibility)
+        local dash_count=0
+        if [ -d "$app_path/default/data/ui/views" ]; then
+          dash_count=$(ls -1 "$app_path/default/data/ui/views/"*.xml 2>/dev/null | wc -l | tr -d ' ')
+        fi
+        if [ -d "$app_path/local/data/ui/views" ]; then
+          local local_dash=$(ls -1 "$app_path/local/data/ui/views/"*.xml 2>/dev/null | wc -l | tr -d ' ')
+          dash_count=$((dash_count + local_dash))
+        fi
+        app_dashboards[$app_name]=$dash_count
+
+        # Count alerts (from savedsearches.conf)
+        local alert_count=0
+        for conf_dir in "default" "local"; do
+          if [ -f "$app_path/$conf_dir/savedsearches.conf" ]; then
+            local alerts=$(grep -c "alert.track" "$app_path/$conf_dir/savedsearches.conf" 2>/dev/null | head -1 | tr -d '[:space:]')
+            [ -z "$alerts" ] || ! [[ "$alerts" =~ ^[0-9]+$ ]] && alerts=0
+            alert_count=$((alert_count + alerts))
+          fi
+        done
+        app_alerts[$app_name]=$alert_count
+      fi
+    done
+  fi
+
+  local app_count=${#all_apps[@]}
+  success "Found ${app_count} applications"
+
+  if [ $app_count -eq 0 ]; then
+    warning "No user applications found. Only system configurations will be exported."
+    return 0
+  fi
+
+  echo ""
+  echo -e "${WHITE}Discovered Applications:${NC}"
+  print_line "─" 72
+  printf "  ${BOLD}%-4s %-30s %12s %12s${NC}\n" "#" "App Name" "Dashboards" "Alerts"
+  print_line "─" 72
+
+  local idx=1
+  for app_name in "${all_apps[@]}"; do
+    local dashes=${app_dashboards[$app_name]:-0}
+    local alerts=${app_alerts[$app_name]:-0}
+    printf "  %-4s %-30s %12s %12s\n" "$idx" "$app_name" "$dashes" "$alerts"
+    ((idx++))
+  done
+
+  print_line "─" 72
+  echo ""
+
+  echo -e "${WHITE}How would you like to select applications?${NC}"
+  echo ""
+  echo -e "  ${GREEN}1.${NC} Export ${GREEN}ALL${NC} applications ${CYAN}(Recommended for full migration)${NC}"
+  echo -e "     → Includes all ${app_count} apps with their complete configurations"
+  echo -e "     → Best for comprehensive migration assessment"
+  echo ""
+  echo -e "  ${GREEN}2.${NC} Enter specific app names ${CYAN}(comma-separated)${NC}"
+  echo -e "     → Example: ${GRAY}security_app, ops_monitoring, compliance${NC}"
+  echo -e "     → Use this if you know exactly which apps to migrate"
+  echo ""
+  echo -e "  ${GREEN}3.${NC} Select from numbered list"
+  echo -e "     → Enter numbers like: ${GRAY}1,2,5,7-10${NC}"
+  echo -e "     → Interactive selection from the list above"
+  echo ""
+  echo -e "  ${GREEN}4.${NC} Export system configurations only ${CYAN}(no apps)${NC}"
+  echo -e "     → Only collects indexes, inputs, system-level configs"
+  echo -e "     → Use for infrastructure-only assessment"
+  echo ""
+
+  local choice
+  prompt_input "Enter your choice" "1" choice
+
+  case "$choice" in
+    1)
+      EXPORT_ALL_APPS=true
+      SELECTED_APPS=("${all_apps[@]}")
+      success "Will export ALL ${app_count} applications"
+      ;;
+
+    2)
+      EXPORT_ALL_APPS=false
+      echo ""
+      echo -e "${WHITE}Enter app names separated by commas:${NC}"
+      echo -e "${GRAY}Example: security_app, ops_monitoring, compliance${NC}"
+      echo ""
+      local app_input
+      prompt_input "App names" "" app_input
+
+      # Parse comma-separated list
+      IFS=',' read -ra input_apps <<< "$app_input"
+
+      echo ""
+      progress "Validating app names..."
+
+      for input_app in "${input_apps[@]}"; do
+        # Trim whitespace
+        input_app=$(echo "$input_app" | xargs)
+
+        # Check if app exists
+        local found=false
+        for known_app in "${all_apps[@]}"; do
+          if [ "$known_app" = "$input_app" ]; then
+            SELECTED_APPS+=("$input_app")
+            success "$input_app - Found (${app_dashboards[$input_app]:-0} dashboards, ${app_alerts[$input_app]:-0} alerts)"
+            found=true
+            break
+          fi
+        done
+
+        if [ "$found" = false ]; then
+          error "$input_app - NOT FOUND (skipping)"
+        fi
+      done
+
+      if [ ${#SELECTED_APPS[@]} -eq 0 ]; then
+        error "No valid apps selected!"
+        echo ""
+        if prompt_yn "Would you like to export ALL apps instead?" "Y"; then
+          EXPORT_ALL_APPS=true
+          SELECTED_APPS=("${all_apps[@]}")
+        else
+          exit 1
+        fi
+      fi
+      ;;
+
+    3)
+      EXPORT_ALL_APPS=false
+      echo ""
+      echo -e "${WHITE}Enter app numbers (e.g., 1,2,5 or 1-5,8,10):${NC}"
+      echo ""
+      local num_input
+      prompt_input "App numbers" "" num_input
+
+      # Parse number ranges
+      local selected_nums=()
+      IFS=',' read -ra parts <<< "$num_input"
+      for part in "${parts[@]}"; do
+        # Trim whitespace (pure bash, no xargs needed)
+        part="${part#"${part%%[![:space:]]*}"}"
+        part="${part%"${part##*[![:space:]]}"}"
+        if [[ "$part" =~ ^([0-9]+)-([0-9]+)$ ]]; then
+          # Range like 1-5
+          for ((i=${BASH_REMATCH[1]}; i<=${BASH_REMATCH[2]}; i++)); do
+            selected_nums+=($i)
+          done
+        elif [[ "$part" =~ ^[0-9]+$ ]]; then
+          # Single number
+          selected_nums+=($part)
+        fi
+      done
+
+      echo ""
+      progress "Selected apps:"
+      for num in "${selected_nums[@]}"; do
+        if [ $num -ge 1 ] && [ $num -le $app_count ]; then
+          local app_name="${all_apps[$((num-1))]}"
+          SELECTED_APPS+=("$app_name")
+          success "$app_name (${app_dashboards[$app_name]:-0} dashboards, ${app_alerts[$app_name]:-0} alerts)"
+        fi
+      done
+
+      if [ ${#SELECTED_APPS[@]} -eq 0 ]; then
+        error "No valid apps selected!"
+        exit 1
+      fi
+      ;;
+
+    4)
+      EXPORT_ALL_APPS=false
+      SELECTED_APPS=()
+      info "System configurations only - no apps will be exported"
+      ;;
+
+    *)
+      warning "Invalid choice. Defaulting to ALL apps."
+      EXPORT_ALL_APPS=true
+      SELECTED_APPS=("${all_apps[@]}")
+      ;;
+  esac
+
+  echo ""
+  local total_dashes=0
+  local total_alerts=0
+  for app_name in "${SELECTED_APPS[@]}"; do
+    total_dashes=$((total_dashes + ${app_dashboards[$app_name]:-0}))
+    total_alerts=$((total_alerts + ${app_alerts[$app_name]:-0}))
+  done
+
+  print_box_header "APPLICATION SELECTION SUMMARY"
+  print_box_line ""
+  print_box_line "  ${WHITE}Apps Selected:${NC}    ${#SELECTED_APPS[@]}"
+  print_box_line "  ${WHITE}Total Dashboards:${NC} ${total_dashes}"
+  print_box_line "  ${WHITE}Total Alerts:${NC}     ${total_alerts}"
+  print_box_line ""
+  print_box_footer
+
+  STATS_APPS=${#SELECTED_APPS[@]}
+
+  echo ""
+  if ! prompt_yn "Proceed with this selection?" "Y"; then
+    echo ""
+    echo -e "${YELLOW}Export cancelled.${NC}"
+    exit 0
+  fi
+}
+
+# =============================================================================
+# DATA CATEGORY SELECTION
+# =============================================================================
+
+select_data_categories() {
+  print_info_box "STEP 4: SELECT DATA CATEGORIES TO COLLECT" \
+    "" \
+    "${WHITE}WHY WE ASK:${NC}" \
+    "Different migration scenarios require different data. For" \
+    "example, if you only want to migrate dashboards, you might" \
+    "skip user activity data. However, for a complete migration" \
+    "assessment, we recommend collecting everything." \
+    "" \
+    "${WHITE}RECOMMENDATION:${NC}" \
+    "Accept the defaults (options 1-6) for comprehensive analysis."
+
+  echo ""
+  echo -e "${WHITE}Select data categories to collect:${NC}"
+  echo ""
+
+  echo -e "  ${GREEN}[✓]${NC} 1. ${WHITE}Configuration Files${NC} (props, transforms, indexes, inputs)"
+  echo -e "      → ${GRAY}Required for understanding data pipeline${NC}"
+  echo ""
+  echo -e "  ${GREEN}[✓]${NC} 2. ${WHITE}Dashboards${NC} (Classic XML + Dashboard Studio JSON)"
+  echo -e "      → ${GRAY}Visual content for conversion to Dynatrace apps${NC}"
+  echo ""
+  echo -e "  ${GREEN}[✓]${NC} 3. ${WHITE}Alerts & Saved Searches${NC} (savedsearches.conf)"
+  echo -e "      → ${GRAY}Critical for operational continuity${NC}"
+  echo ""
+  echo -e "  ${GREEN}[✓]${NC} 4. ${WHITE}Users, Roles & Groups${NC} (RBAC data - NO passwords)"
+  echo -e "      → ${GRAY}Usernames and roles only - passwords are NEVER collected${NC}"
+  echo ""
+  echo -e "  ${GREEN}[✓]${NC} 5. ${WHITE}Usage Analytics${NC} (search frequency, dashboard views)"
+  echo -e "      → ${GRAY}Identifies high-value assets worth migrating${NC}"
+  echo ""
+  echo -e "  ${GREEN}[✓]${NC} 6. ${WHITE}Index & Data Statistics${NC}"
+  echo -e "      → ${GRAY}Volume metrics for capacity planning${NC}"
+  echo ""
+  echo -e "  ${YELLOW}[ ]${NC} 7. ${WHITE}Lookup Tables${NC} (.csv files)"
+  echo -e "      → ${GRAY}Reference data used in searches${NC}"
+  echo -e "      → ${YELLOW}May contain sensitive data - review before including${NC}"
+  echo ""
+  echo -e "  ${YELLOW}[ ]${NC} 8. ${WHITE}Audit Log Sample${NC} (last 10,000 entries)"
+  echo -e "      → ${GRAY}Detailed search patterns for analysis${NC}"
+  echo -e "      → ${YELLOW}May contain sensitive query content${NC}"
+  echo ""
+  echo -e "  ${GREEN}[✓]${NC} 9. ${WHITE}Anonymize Sensitive Data${NC} (emails, hostnames, IPs)"
+  echo -e "      → ${GRAY}Replaces real data with consistent fake values${NC}"
+  echo -e "      → ${CYAN}ON by default - recommended for security${NC}"
+  echo ""
+
+  echo -e "  ${DIM}🔒 Privacy: Passwords are NEVER collected. Secrets in .conf files are auto-redacted.${NC}"
+  echo ""
+  echo -e "${WHITE}Enter numbers to toggle (e.g., 7,8 to add lookups and audit)${NC}"
+  echo -e "${GRAY}Or press Enter to accept defaults [1-6,9]:${NC}"
+  echo ""
+
+  local toggle_input
+  prompt_input "Toggle categories" "" toggle_input
+
+  if [ -n "$toggle_input" ]; then
+    IFS=',' read -ra toggles <<< "$toggle_input"
+    for toggle in "${toggles[@]}"; do
+      toggle=$(echo "$toggle" | xargs)
+      case "$toggle" in
+        1) COLLECT_CONFIGS=false; info "Configurations: OFF" ;;
+        2) COLLECT_DASHBOARDS=false; info "Dashboards: OFF" ;;
+        3) COLLECT_ALERTS=false; info "Alerts: OFF" ;;
+        4) COLLECT_RBAC=false; info "Users/RBAC: OFF" ;;
+        5) COLLECT_USAGE=false; info "Usage Analytics: OFF" ;;
+        6) COLLECT_INDEXES=false; info "Index Stats: OFF" ;;
+        7) COLLECT_LOOKUPS=true; info "Lookup Tables: ON" ;;
+        8) COLLECT_AUDIT=true; info "Audit Sample: ON" ;;
+        9) ANONYMIZE_DATA=false; info "Data Anonymization: OFF - Real emails, hostnames, and IPs will be preserved" ;;
+      esac
+    done
+  fi
+
+  echo ""
+  success "Data categories configured"
+}
+
+# =============================================================================
+# SPLUNK AUTHENTICATION
+# =============================================================================
+
+authenticate_splunk() {
+  # Skip for Universal Forwarder
+  if [ "$SPLUNK_FLAVOR" = "uf" ]; then
+    info "Skipping authentication (not required for Universal Forwarder)"
+    return 0
+  fi
+
+  print_info_box "STEP 5: SPLUNK AUTHENTICATION" \
+    "" \
+    "${WHITE}WHY WE NEED THIS:${NC}" \
+    "Some data requires accessing Splunk's REST API, including:" \
+    "  • Dashboard Studio dashboards (stored in KV Store)" \
+    "  • User and role information" \
+    "  • Usage analytics from internal indexes" \
+    "  • Distributed environment topology" \
+    "" \
+    "${WHITE}REQUIRED PERMISSIONS:${NC}" \
+    "The account needs: admin_all_objects, list_users, list_roles" \
+    "" \
+    "${WHITE}SECURITY NOTE:${NC}" \
+    "Credentials are only used locally and are never stored or transmitted."
+
+  echo ""
+
+  prompt_input "Splunk admin username" "admin" SPLUNK_USER
+  prompt_password "Splunk admin password" SPLUNK_PASSWORD
+
+  echo ""
+  progress "Testing authentication..."
+
+  # Detect management port
+  if [ -f "$SPLUNK_HOME/etc/system/local/web.conf" ]; then
+    local mgmt_port=$(grep "^mgmtHostPort" "$SPLUNK_HOME/etc/system/local/web.conf" 2>/dev/null | cut -d= -f2 | tr -d ' ' | cut -d: -f2)
+    if [ -n "$mgmt_port" ]; then
+      SPLUNK_PORT="$mgmt_port"
+    fi
+  fi
+
+  # Test authentication (use GET request with query parameter)
+  local auth_response
+  auth_response=$(curl -k -s -w "%{http_code}" \
+    -u "${SPLUNK_USER}:${SPLUNK_PASSWORD}" \
+    "https://${SPLUNK_HOST}:${SPLUNK_PORT}/services/authentication/current-context?output_mode=json" \
+    -o /tmp/dynabridge_auth_test.json 2>&1)
+
+  local http_code="${auth_response: -3}"
+
+  if [ "$http_code" = "200" ]; then
+    success "Authentication successful"
+
+    # Check capabilities
+    progress "Checking account capabilities..."
+
+    local caps=$(cat /tmp/dynabridge_auth_test.json 2>/dev/null)
+
+    for cap in "admin_all_objects" "list_users" "list_roles"; do
+      if echo "$caps" | grep -q "$cap"; then
+        success "Capability: $cap"
+      else
+        warning "Missing capability: $cap (some data may not be collected)"
+      fi
+    done
+
+    rm -f /tmp/dynabridge_auth_test.json
+
+  elif [ "$http_code" = "401" ]; then
+    error "Authentication failed (invalid credentials)"
+    echo ""
+    # In AUTO_CONFIRM mode, don't retry - just continue without REST API
+    if [ "$AUTO_CONFIRM" = true ]; then
+      warning "Continuing without REST API access (AUTO_CONFIRM mode). Some data will not be collected."
+      SPLUNK_USER=""
+      SPLUNK_PASSWORD=""
+    elif prompt_yn "Would you like to try again?" "Y"; then
+      authenticate_splunk
+      return $?
+    else
+      warning "Continuing without REST API access. Some data will not be collected."
+      SPLUNK_USER=""
+      SPLUNK_PASSWORD=""
+    fi
+
+  else
+    error "Could not connect to Splunk REST API (HTTP $http_code)"
+    echo ""
+    echo -e "${GRAY}This could mean:${NC}"
+    echo -e "${GRAY}  • Splunk is not running${NC}"
+    echo -e "${GRAY}  • Management port is different from $SPLUNK_PORT${NC}"
+    echo -e "${GRAY}  • Firewall blocking localhost connections${NC}"
+    echo ""
+
+    if prompt_yn "Continue without REST API access?" "N"; then
+      warning "Some data will not be collected (Dashboard Studio, users, usage analytics)"
+      SPLUNK_USER=""
+      SPLUNK_PASSWORD=""
+    else
+      exit 1
+    fi
+  fi
+
+  echo ""
+}
+
+# =============================================================================
+# USAGE ANALYTICS PERIOD
+# =============================================================================
+
+select_usage_period() {
+  if [ "$COLLECT_USAGE" = false ]; then
+    return 0
+  fi
+
+  if [ -z "$SPLUNK_USER" ]; then
+    warning "Skipping usage analytics configuration (no REST API access)"
+    COLLECT_USAGE=false
+    return 0
+  fi
+
+  print_info_box "STEP 6: USAGE ANALYTICS TIME PERIOD" \
+    "" \
+    "${WHITE}WHY WE ASK:${NC}" \
+    "Usage analytics help identify which dashboards, alerts, and" \
+    "searches are actively used. A longer period gives more accurate" \
+    "data but takes longer to collect." \
+    "" \
+    "${WHITE}RECOMMENDATION:${NC}" \
+    "30 days provides a good balance of accuracy and speed."
+
+  echo ""
+  echo -e "${WHITE}Select usage analytics collection period:${NC}"
+  echo ""
+  echo -e "  1. Last 7 days   ${GRAY}(fastest, limited data)${NC}"
+  echo -e "  2. Last 30 days  ${GREEN}(recommended)${NC}"
+  echo -e "  3. Last 90 days  ${GRAY}(more comprehensive)${NC}"
+  echo -e "  4. Last 365 days ${GRAY}(full year, slowest)${NC}"
+  echo -e "  5. Skip usage analytics"
+  echo ""
+
+  local choice
+  prompt_input "Enter choice" "2" choice
+
+  case "$choice" in
+    1) USAGE_PERIOD="7d"; info "Will collect 7 days of usage data" ;;
+    2) USAGE_PERIOD="30d"; info "Will collect 30 days of usage data" ;;
+    3) USAGE_PERIOD="90d"; info "Will collect 90 days of usage data" ;;
+    4) USAGE_PERIOD="365d"; info "Will collect 365 days of usage data" ;;
+    5) COLLECT_USAGE=false; info "Usage analytics disabled" ;;
+    *) USAGE_PERIOD="30d"; info "Defaulting to 30 days" ;;
+  esac
+
+  echo ""
+}
+
+# =============================================================================
+# CREATE EXPORT DIRECTORY
+# =============================================================================
+
+create_export_directory() {
+  print_info_box "STEP 7: PREPARING EXPORT" \
+    "" \
+    "${WHITE}Creating export directory structure...${NC}"
+
+  echo ""
+
+  TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+  local hostname=$(get_hostname short)
+  EXPORT_NAME="dynabridge_export_${hostname}_${TIMESTAMP}"
+  EXPORT_DIR="/tmp/$EXPORT_NAME"
+  LOG_FILE="$EXPORT_DIR/export.log"
+
+  progress "Creating directory: $EXPORT_DIR"
+  rm -rf "$EXPORT_DIR"
+  mkdir -p "$EXPORT_DIR"
+  # DynaBridge analytics - all migration-specific data collected by DynaBridge
+  mkdir -p "$EXPORT_DIR/dynabridge_analytics"
+  mkdir -p "$EXPORT_DIR/dynabridge_analytics/system_info"
+  mkdir -p "$EXPORT_DIR/dynabridge_analytics/rbac"
+  mkdir -p "$EXPORT_DIR/dynabridge_analytics/usage_analytics"
+  mkdir -p "$EXPORT_DIR/dynabridge_analytics/usage_analytics/ingestion_infrastructure"
+  mkdir -p "$EXPORT_DIR/dynabridge_analytics/indexes"
+  # Splunk configurations
+  mkdir -p "$EXPORT_DIR/_system/local"
+  # Dashboards separated by type
+  mkdir -p "$EXPORT_DIR/dashboards_classic"
+  mkdir -p "$EXPORT_DIR/dashboards_studio"
+
+  touch "$LOG_FILE"
+  log "DynaBridge Export Started"
+  log "Script Version: $SCRIPT_VERSION"
+  log "Export Directory: $EXPORT_DIR"
+
+  success "Export directory created"
+  echo ""
+}
+
+# =============================================================================
+# COLLECTION FUNCTIONS
+# =============================================================================
+
+collect_system_info() {
+  progress "Collecting system information..."
+
+  # Basic system info
+  {
+    echo "{"
+    echo "  \"hostname\": \"$(get_hostname)\","
+    echo "  \"platform\": \"$(uname -s)\","
+    echo "  \"platformVersion\": \"$(uname -r)\","
+    echo "  \"architecture\": \"$(uname -m)\","
+    echo "  \"splunkHome\": \"$SPLUNK_HOME\","
+    echo "  \"splunkFlavor\": \"$SPLUNK_FLAVOR\","
+    echo "  \"splunkRole\": \"$SPLUNK_ROLE\","
+    echo "  \"splunkArchitecture\": \"$SPLUNK_ARCHITECTURE\","
+    echo "  \"exportTimestamp\": \"$(date -u +"%Y-%m-%dT%H:%M:%SZ")\","
+    echo "  \"exportVersion\": \"$SCRIPT_VERSION\""
+    echo "}"
+  } > "$EXPORT_DIR/dynabridge_analytics/system_info/environment.json"
+
+  # Splunk version
+  if [ -f "$SPLUNK_HOME/etc/splunk.version" ]; then
+    cp "$SPLUNK_HOME/etc/splunk.version" "$EXPORT_DIR/dynabridge_analytics/system_info/"
+  fi
+
+  # REST API system info (use -G to force GET request with query params)
+  if [ -n "$SPLUNK_USER" ]; then
+    curl -k -s -G -u "${SPLUNK_USER}:${SPLUNK_PASSWORD}" \
+      "https://${SPLUNK_HOST}:${SPLUNK_PORT}/services/server/info" \
+      -d "output_mode=json" \
+      > "$EXPORT_DIR/dynabridge_analytics/system_info/server_info.json" 2>/dev/null
+
+    curl -k -s -G -u "${SPLUNK_USER}:${SPLUNK_PASSWORD}" \
+      "https://${SPLUNK_HOST}:${SPLUNK_PORT}/services/apps/local" \
+      -d "output_mode=json" -d "count=0" \
+      > "$EXPORT_DIR/dynabridge_analytics/system_info/installed_apps.json" 2>/dev/null
+
+    curl -k -s -G -u "${SPLUNK_USER}:${SPLUNK_PASSWORD}" \
+      "https://${SPLUNK_HOST}:${SPLUNK_PORT}/services/search/distributed/peers" \
+      -d "output_mode=json" \
+      > "$EXPORT_DIR/dynabridge_analytics/system_info/search_peers.json" 2>/dev/null
+
+    curl -k -s -G -u "${SPLUNK_USER}:${SPLUNK_PASSWORD}" \
+      "https://${SPLUNK_HOST}:${SPLUNK_PORT}/services/licenser/licenses" \
+      -d "output_mode=json" \
+      > "$EXPORT_DIR/dynabridge_analytics/system_info/license_info.json" 2>/dev/null
+  fi
+
+  success "System information collected"
+}
+
+collect_app_configs() {
+  local app=$1
+  local app_path="$SPLUNK_HOME/etc/apps/$app"
+
+  if [ ! -d "$app_path" ]; then
+    warning "App directory not found: $app"
+    return 1
+  fi
+
+  info "Exporting app: $app"
+  mkdir -p "$EXPORT_DIR/$app"
+
+  # Configuration files to export
+  local conf_files=(
+    "props.conf"
+    "transforms.conf"
+    "eventtypes.conf"
+    "tags.conf"
+    "indexes.conf"
+    "macros.conf"
+    "savedsearches.conf"
+    "inputs.conf"
+    "outputs.conf"
+    "collections.conf"
+    "fields.conf"
+    "workflow_actions.conf"
+    "commands.conf"
+  )
+
+  # Export from default/ and local/
+  for conf_dir in "default" "local"; do
+    if [ -d "$app_path/$conf_dir" ]; then
+      mkdir -p "$EXPORT_DIR/$app/$conf_dir"
+
+      for conf_file in "${conf_files[@]}"; do
+        if [ -f "$app_path/$conf_dir/$conf_file" ]; then
+          cp "$app_path/$conf_dir/$conf_file" "$EXPORT_DIR/$app/$conf_dir/"
+          log "Copied: $app/$conf_dir/$conf_file"
+        fi
+      done
+    fi
+  done
+
+  # Export dashboards (XML) - use cp with glob instead of find for container compatibility
+  if [ "$COLLECT_DASHBOARDS" = true ]; then
+    for dash_dir in "default/data/ui/views" "local/data/ui/views"; do
+      if [ -d "$app_path/$dash_dir" ]; then
+        mkdir -p "$EXPORT_DIR/$app/$dash_dir"
+        cp "$app_path/$dash_dir/"*.xml "$EXPORT_DIR/$app/$dash_dir/" 2>/dev/null
+        local dash_count=$(ls -1 "$EXPORT_DIR/$app/$dash_dir/"*.xml 2>/dev/null | wc -l | tr -d ' ')
+        if [ "$dash_count" -gt 0 ]; then
+          log "Copied $dash_count dashboards from $app/$dash_dir"
+          # NOTE: Don't increment STATS_DASHBOARDS here - it will be counted
+          # via REST API in collect_dashboard_studio() to avoid double-counting.
+          # The XML files are the same dashboards retrieved via REST API.
+          STATS_DASHBOARDS_XML=$((STATS_DASHBOARDS_XML + dash_count))
+        fi
+      fi
+    done
+  fi
+
+  # Export lookup tables (use cp with glob instead of find for container compatibility)
+  if [ "$COLLECT_LOOKUPS" = true ] && [ -d "$app_path/lookups" ]; then
+    mkdir -p "$EXPORT_DIR/$app/lookups"
+    cp "$app_path/lookups/"*.csv "$EXPORT_DIR/$app/lookups/" 2>/dev/null
+    log "Copied lookup tables from $app"
+  fi
+
+  # Count alerts
+  local alert_count=0
+  for conf_dir in "default" "local"; do
+    if [ -f "$EXPORT_DIR/$app/$conf_dir/savedsearches.conf" ]; then
+      local alerts=$(grep -c "alert.track" "$EXPORT_DIR/$app/$conf_dir/savedsearches.conf" 2>/dev/null | head -1 | tr -d '[:space:]')
+      [ -z "$alerts" ] || ! [[ "$alerts" =~ ^[0-9]+$ ]] && alerts=0
+      alert_count=$((alert_count + alerts))
+    fi
+  done
+  STATS_ALERTS=$((STATS_ALERTS + alert_count))
+
+  return 0
+}
+
+collect_dashboard_studio() {
+  if [ -z "$SPLUNK_USER" ]; then
+    warning "Skipping dashboards (no REST API access)"
+    return 0
+  fi
+
+  if [ "$COLLECT_DASHBOARDS" = false ]; then
+    return 0
+  fi
+
+  progress "Collecting dashboards via REST API..."
+
+  # Get list of all dashboards (use -G to force GET request)
+  curl -k -s -G -u "${SPLUNK_USER}:${SPLUNK_PASSWORD}" \
+    "https://${SPLUNK_HOST}:${SPLUNK_PORT}/servicesNS/-/-/data/ui/views" \
+    -H "Accept: application/json" \
+    -d "output_mode=json" -d "count=0" \
+    > "$EXPORT_DIR/dynabridge_analytics/system_info/dashboards_list.json" 2>/dev/null
+
+  if [ ! -s "$EXPORT_DIR/dynabridge_analytics/system_info/dashboards_list.json" ]; then
+    warning "Could not retrieve dashboard list"
+    return 0
+  fi
+
+  # Count total dashboards for progress tracking
+  local dashboard_names=()
+  while IFS= read -r name; do
+    if [ -n "$name" ]; then
+      dashboard_names+=("$name")
+    fi
+  done < <(grep -o '"name":"[^"]*"' "$EXPORT_DIR/dynabridge_analytics/system_info/dashboards_list.json" | cut -d'"' -f4)
+
+  local total_dashboards=${#dashboard_names[@]}
+
+  # Show scale warning for large environments
+  show_scale_warning "dashboards" "$total_dashboards" 200
+
+  # Initialize progress bar
+  progress_init "Exporting Dashboards (Classic & Studio)" "$total_dashboards"
+
+  # Parse and export each dashboard with progress
+  local classic_count=0
+  local studio_count=0
+  local failed_count=0
+  local batch_size=10
+  local batch_count=0
+
+  for dashboard_name in "${dashboard_names[@]}"; do
+    # Rate limit API calls
+    sleep "$API_DELAY_SECONDS"
+
+    # Fetch dashboard to temp file first
+    local temp_file="$EXPORT_DIR/dynabridge_analytics/system_info/.dashboard_temp.json"
+    curl -k -s -G -u "${SPLUNK_USER}:${SPLUNK_PASSWORD}" \
+      "https://${SPLUNK_HOST}:${SPLUNK_PORT}/servicesNS/-/-/data/ui/views/$dashboard_name" \
+      -H "Accept: application/json" \
+      -d "output_mode=json" \
+      > "$temp_file" 2>/dev/null
+
+    if [ -s "$temp_file" ]; then
+      # Determine dashboard type by examining content
+      # Dashboard Studio v2 dashboards can be identified by:
+      # 1. eai:data contains "splunk-dashboard-studio" template reference (example dashboards)
+      # 2. eai:data contains '<dashboard version="2"' (user-created Studio dashboards)
+      # 3. eai:data contains '<definition>' element (contains actual JSON definition)
+      # 4. eai:data starts with { (direct JSON format - rare)
+      # Classic dashboards have <dashboard> or <form> without version="2"
+
+      local is_studio=false
+      local has_json_definition=false
+      local is_template_reference=false
+
+      # Check for Dashboard Studio v2 format (user-created dashboards)
+      # These have <dashboard version="2"> and <definition><![CDATA[{JSON}]]></definition>
+      if grep -q 'version=\\"2\\"' "$temp_file" 2>/dev/null || grep -q 'version=\"2\"' "$temp_file" 2>/dev/null; then
+        is_studio=true
+        # Check if it has actual JSON definition embedded
+        if grep -q '<definition>' "$temp_file" 2>/dev/null || grep -q '\\u003cdefinition\\u003e' "$temp_file" 2>/dev/null; then
+          has_json_definition=true
+          log "Dashboard Studio v2 with JSON definition: $dashboard_name"
+        fi
+      fi
+
+      # Check for Dashboard Studio template reference (example dashboards)
+      if grep -q "splunk-dashboard-studio" "$temp_file" 2>/dev/null; then
+        is_studio=true
+        is_template_reference=true
+        log "Dashboard Studio template reference: $dashboard_name"
+      fi
+
+      # Also check if eai:data starts with { (direct JSON format - some Studio dashboards)
+      local eai_data_start=""
+      eai_data_start=$(grep -oP '"eai:data"\s*:\s*"\K.' "$temp_file" 2>/dev/null | head -1)
+      if [ "$eai_data_start" = "{" ]; then
+        is_studio=true
+        has_json_definition=true
+      fi
+
+      if [ "$is_studio" = true ]; then
+        # Dashboard Studio - save with metadata about content type
+        mv "$temp_file" "$EXPORT_DIR/dashboards_studio/${dashboard_name}.json"
+        ((studio_count++))
+
+        # Extract JSON definition if present and save separately for easier processing
+        if [ "$has_json_definition" = true ]; then
+          # Try to extract the definition JSON from CDATA
+          # The JSON is inside: <definition><![CDATA[{...}]]></definition>
+          # In the JSON response, this is escaped as: \\u003cdefinition\\u003e\\u003c![CDATA[{...}]]\\u003e
+          local definition_file="$EXPORT_DIR/dashboards_studio/${dashboard_name}_definition.json"
+
+          # Extract definition content using Python for reliable JSON/CDATA parsing
+          python3 -c "
+import json
+import re
+import sys
+
+try:
+    with open('$EXPORT_DIR/dashboards_studio/${dashboard_name}.json') as f:
+        data = json.load(f)
+
+    eai_data = data.get('entry', [{}])[0].get('content', {}).get('eai:data', '')
+
+    # Look for definition CDATA block
+    # Pattern: <definition><![CDATA[{...}]]></definition>
+    match = re.search(r'<definition><!\\[CDATA\\[(.+?)\\]\\]></definition>', eai_data, re.DOTALL)
+    if match:
+        json_content = match.group(1)
+        # Validate it's valid JSON
+        parsed = json.loads(json_content)
+        # Save the extracted JSON
+        with open('$definition_file', 'w') as out:
+            json.dump(parsed, out, indent=2)
+        print('extracted')
+    else:
+        print('no-definition')
+except Exception as e:
+    print(f'error: {e}')
+" 2>/dev/null 1>/dev/null
+
+          if [ -f "$definition_file" ]; then
+            log "  → Extracted JSON definition to ${dashboard_name}_definition.json"
+          fi
+        elif [ "$is_template_reference" = true ]; then
+          # Try to extract definition from splunk-dashboard-studio app's compiled JS
+          local studio_js_path="$SPLUNK_HOME/etc/apps/splunk-dashboard-studio/appserver/static/build/examples/${dashboard_name}.js"
+          if [ -f "$studio_js_path" ]; then
+            local definition_file="$EXPORT_DIR/dashboards_studio/${dashboard_name}_definition.json"
+            # Extract JSON definition from compiled JS using Python
+            python3 -c "
+import re
+import json
+import sys
+
+try:
+    with open('$studio_js_path', 'r') as f:
+        js_content = f.read()
+
+    # Dashboard Studio embeds JSON as: var e={visualizations:{...},dataSources:{...},...}
+    # or: const e={...};
+    # The definition ends with ,title:\"...\"}; followed by render code
+
+    # Look for the dashboard definition pattern - it starts after '={' and contains layout:
+    # Pattern: ={visualizations:...,dataSources:...,layout:...,title:\"...\"}
+    # We need to find the balanced braces
+
+    # Find potential start points (after '={' that contain 'visualizations')
+    matches = list(re.finditer(r'[=,]\s*(\{[^}]*visualizations[^}]*\{)', js_content))
+
+    for match in matches:
+        start_idx = match.start() + 1  # Skip the '=' or ','
+        while js_content[start_idx] in ' \t\n':
+            start_idx += 1
+
+        # Count braces to find matching close
+        brace_count = 0
+        idx = start_idx
+        in_string = False
+        escape_next = False
+
+        while idx < len(js_content):
+            char = js_content[idx]
+
+            if escape_next:
+                escape_next = False
+                idx += 1
+                continue
+
+            if char == '\\\\':
+                escape_next = True
+                idx += 1
+                continue
+
+            if char == '\"' and not escape_next:
+                in_string = not in_string
+
+            if not in_string:
+                if char == '{':
+                    brace_count += 1
+                elif char == '}':
+                    brace_count -= 1
+                    if brace_count == 0:
+                        # Found the end
+                        js_obj = js_content[start_idx:idx+1]
+
+                        # Check if this looks like a dashboard definition
+                        if 'layout' in js_obj and 'dataSources' in js_obj:
+                            # Convert JS object notation to JSON
+                            # Replace unquoted keys with quoted keys
+                            json_str = re.sub(r'([{,]\s*)([a-zA-Z_][a-zA-Z0-9_]*)\s*:', r'\1\"\2\":', js_obj)
+                            # Replace single quotes with double quotes
+                            json_str = json_str.replace(\"'\", '\"')
+
+                            try:
+                                # Try to parse and re-serialize for valid JSON
+                                # This is a simplified approach - may need refinement
+                                with open('$definition_file', 'w') as out:
+                                    out.write(js_obj)  # Write raw JS object for now
+                                print('extracted')
+                                sys.exit(0)
+                            except:
+                                pass
+                        break
+            idx += 1
+
+    print('not_found')
+except Exception as e:
+    print(f'error: {e}')
+" 2>/dev/null 1>/dev/null
+
+            if [ -f "$definition_file" ]; then
+              log "  → Extracted JSON definition from Studio JS: ${dashboard_name}_definition.json"
+            else
+              log "  → Template reference (JS file found but could not extract definition)"
+            fi
+          else
+            log "  → Template reference (JS file not found: $studio_js_path)"
+          fi
+        fi
+
+        log "Exported Dashboard Studio: $dashboard_name"
+      else
+        # Classic dashboard (pure XML without Dashboard Studio reference)
+        mv "$temp_file" "$EXPORT_DIR/dashboards_classic/${dashboard_name}.json"
+        ((classic_count++))
+        log "Exported Classic Dashboard: $dashboard_name"
+      fi
+    else
+      ((failed_count++))
+      log "Failed to export: $dashboard_name"
+      rm -f "$temp_file" 2>/dev/null
+    fi
+
+    ((batch_count++))
+
+    # Update progress every batch_size items (reduces terminal I/O overhead)
+    if [ $((batch_count % batch_size)) -eq 0 ] || [ "$batch_count" -eq "$total_dashboards" ]; then
+      progress_update "$batch_count"
+    fi
+  done
+
+  # Clean up temp file
+  rm -f "$EXPORT_DIR/dynabridge_analytics/system_info/.dashboard_temp.json" 2>/dev/null
+
+  progress_complete
+
+  if [ "$failed_count" -gt 0 ]; then
+    warning "Failed to export $failed_count dashboards (see log for details)"
+  fi
+
+  success "Exported $classic_count Classic + $studio_count Dashboard Studio dashboards"
+  STATS_DASHBOARDS=$((STATS_DASHBOARDS + classic_count + studio_count))
+
+  # Also collect Dashboard Studio example JS files if available
+  collect_dashboard_studio_examples
+}
+
+# Collect Dashboard Studio example definitions from compiled JS files
+collect_dashboard_studio_examples() {
+  local studio_examples_dir="$SPLUNK_HOME/etc/apps/splunk-dashboard-studio/appserver/static/build/examples"
+
+  if [ ! -d "$studio_examples_dir" ]; then
+    log "Dashboard Studio examples directory not found - skipping"
+    return 0
+  fi
+
+  progress "Collecting Dashboard Studio example definitions..."
+
+  # Create directory for studio example JS files
+  mkdir -p "$EXPORT_DIR/dashboards_studio_examples"
+
+  # Count and copy all example JS files
+  local example_count=0
+  for js_file in "$studio_examples_dir"/*.js; do
+    if [ -f "$js_file" ]; then
+      local basename=$(basename "$js_file")
+      cp "$js_file" "$EXPORT_DIR/dashboards_studio_examples/"
+      ((example_count++))
+    fi
+  done
+
+  if [ "$example_count" -gt 0 ]; then
+    success "Collected $example_count Dashboard Studio example JS files"
+    log "  → These contain the actual JSON definitions for example dashboards"
+  fi
+}
+
+collect_rbac() {
+  if [ -z "$SPLUNK_USER" ]; then
+    warning "Skipping RBAC collection (no REST API access)"
+    return 0
+  fi
+
+  if [ "$COLLECT_RBAC" = false ]; then
+    return 0
+  fi
+
+  progress "Collecting users, roles, and groups..."
+
+  # Users (use -G to force GET request)
+  curl -k -s -G -u "${SPLUNK_USER}:${SPLUNK_PASSWORD}" \
+    "https://${SPLUNK_HOST}:${SPLUNK_PORT}/services/authentication/users" \
+    -d "output_mode=json" -d "count=0" \
+    > "$EXPORT_DIR/dynabridge_analytics/rbac/users.json" 2>/dev/null
+
+  local user_count=$(grep -o '"name"' "$EXPORT_DIR/dynabridge_analytics/rbac/users.json" 2>/dev/null | wc -l | tr -d ' ')
+  STATS_USERS=$user_count
+
+  # Roles (use -G to force GET request)
+  curl -k -s -G -u "${SPLUNK_USER}:${SPLUNK_PASSWORD}" \
+    "https://${SPLUNK_HOST}:${SPLUNK_PORT}/services/authorization/roles" \
+    -d "output_mode=json" -d "count=0" \
+    > "$EXPORT_DIR/dynabridge_analytics/rbac/roles.json" 2>/dev/null
+
+  # Auth config (with password redaction)
+  if [ -f "$SPLUNK_HOME/etc/system/local/authentication.conf" ]; then
+    sed 's/password\s*=.*/password = [REDACTED]/gi' \
+      "$SPLUNK_HOME/etc/system/local/authentication.conf" \
+      > "$EXPORT_DIR/dynabridge_analytics/rbac/authentication.conf" 2>/dev/null
+  fi
+
+  # Authorization config
+  if [ -f "$SPLUNK_HOME/etc/system/local/authorize.conf" ]; then
+    cp "$SPLUNK_HOME/etc/system/local/authorize.conf" "$EXPORT_DIR/dynabridge_analytics/rbac/"
+  fi
+
+  success "Collected $user_count users and roles"
+}
+
+collect_usage_analytics() {
+  if [ -z "$SPLUNK_USER" ]; then
+    warning "Skipping usage analytics (no REST API access)"
+    return 0
+  fi
+
+  if [ "$COLLECT_USAGE" = false ]; then
+    return 0
+  fi
+
+  # Define collection tasks for progress tracking
+  local tasks=(
+    "dashboard_views:Dashboard view statistics"
+    "user_activity:User activity metrics"
+    "alert_executions:Alert firing history"
+    "search_patterns:Search usage patterns"
+    "data_source_usage:Data source consumption"
+    "daily_volume:Daily volume analysis"
+    "saved_searches:Saved search metadata"
+    "scheduler_status:Scheduler execution stats"
+  )
+
+  progress_init "Collecting Usage Intelligence (${USAGE_PERIOD})" "${#tasks[@]}"
+
+  local task_num=0
+
+  # Helper function to run a Splunk search and save results
+  # Returns detailed error info for remote debugging
+  # Includes rate limiting to avoid impacting Splunk performance
+  run_usage_search() {
+    local search_query="$1"
+    local output_file="$2"
+    local description="$3"
+    local max_wait="${4:-120}"  # Default 120 seconds, configurable
+
+    # Rate limiting: pause before making API call
+    log "Rate limit: waiting ${API_DELAY_SECONDS}s before search..."
+    sleep "$API_DELAY_SECONDS"
+
+    # Create a search job with full error capture
+    local http_code=""
+    local job_response=""
+    local temp_file=$(mktemp)
+
+    http_code=$(curl -k -s -w "%{http_code}" -o "$temp_file" \
+      -u "${SPLUNK_USER}:${SPLUNK_PASSWORD}" \
+      "https://${SPLUNK_HOST}:${SPLUNK_PORT}/services/search/jobs" \
+      -d "output_mode=json" \
+      -d "earliest_time=-${USAGE_PERIOD}" \
+      -d "latest_time=now" \
+      --data-urlencode "search=$search_query" \
+      2>/dev/null)
+
+    job_response=$(cat "$temp_file")
+    rm -f "$temp_file"
+
+    # Detailed error handling based on HTTP status
+    case "$http_code" in
+      000)
+        log "NETWORK ERROR for '$description': Could not connect to ${SPLUNK_HOST}:${SPLUNK_PORT}"
+        echo "{\"error\": \"network_error\", \"description\": \"$description\", \"message\": \"Could not connect to Splunk REST API at ${SPLUNK_HOST}:${SPLUNK_PORT}. Check: 1) Splunk is running 2) Port 8089 is accessible 3) No firewall blocking\", \"http_code\": \"$http_code\"}" > "$output_file"
+        ((STATS_ERRORS++))
+        return 1
+        ;;
+      401)
+        log "AUTH ERROR for '$description': Invalid credentials"
+        echo "{\"error\": \"auth_error\", \"description\": \"$description\", \"message\": \"Authentication failed. Check username/password or API token.\", \"http_code\": \"$http_code\"}" > "$output_file"
+        ((STATS_ERRORS++))
+        return 1
+        ;;
+      403)
+        log "PERMISSION ERROR for '$description': User lacks required capabilities"
+        echo "{\"error\": \"permission_error\", \"description\": \"$description\", \"message\": \"User lacks permission. Required capabilities: search, schedule_search. Check role assignments in Splunk.\", \"http_code\": \"$http_code\"}" > "$output_file"
+        ((STATS_ERRORS++))
+        return 1
+        ;;
+      404)
+        log "ENDPOINT ERROR for '$description': REST endpoint not found"
+        echo "{\"error\": \"endpoint_not_found\", \"description\": \"$description\", \"message\": \"REST API endpoint not found. This may be a Splunk Cloud restriction.\", \"http_code\": \"$http_code\"}" > "$output_file"
+        ((STATS_ERRORS++))
+        return 1
+        ;;
+      500|502|503)
+        log "SERVER ERROR for '$description': Splunk server error ($http_code)"
+        local escaped_response=$(echo "$job_response" | head -c 500 | $PYTHON_CMD -c "import json,sys; print(json.dumps(sys.stdin.read()))" 2>/dev/null || echo '"truncated"')
+        echo "{\"error\": \"server_error\", \"description\": \"$description\", \"message\": \"Splunk server error. Check splunkd.log for details.\", \"http_code\": \"$http_code\", \"response\": $escaped_response}" > "$output_file"
+        ((STATS_ERRORS++))
+        return 1
+        ;;
+    esac
+
+    local sid=$(echo "$job_response" | grep -o '"sid":"[^"]*"' | cut -d'"' -f4)
+
+    if [ -z "$sid" ]; then
+      # Try to extract error message from response
+      local error_msg=$(echo "$job_response" | grep -o '"message":"[^"]*"' | head -1 | cut -d'"' -f4)
+      [ -z "$error_msg" ] && error_msg="Unknown error creating search job"
+
+      log "SEARCH CREATE FAILED for '$description': $error_msg"
+      echo "{\"error\": \"search_create_failed\", \"description\": \"$description\", \"message\": \"$error_msg\", \"http_code\": \"$http_code\", \"query_preview\": \"$(echo "$search_query" | head -c 200)\"}" > "$output_file"
+      ((STATS_ERRORS++))
+      return 1
+    fi
+
+    # Wait for search to complete with progress indication
+    local waited=0
+    local is_done="false"
+    local last_event_count=0
+
+    while [ "$is_done" != "true" ] && [ "$waited" -lt "$max_wait" ]; do
+      sleep "$SEARCH_POLL_INTERVAL"
+      waited=$((waited + SEARCH_POLL_INTERVAL))
+
+      local status=$(curl -k -s -G -u "${SPLUNK_USER}:${SPLUNK_PASSWORD}" \
+        "https://${SPLUNK_HOST}:${SPLUNK_PORT}/services/search/jobs/$sid" \
+        -d "output_mode=json" 2>/dev/null)
+
+      is_done=$(echo "$status" | grep -o '"isDone":[^,}]*' | cut -d: -f2 | tr -d ' ')
+
+      # Check for search errors
+      local search_error=$(echo "$status" | grep -o '"isFailed":true')
+      if [ -n "$search_error" ]; then
+        local fail_msg=$(echo "$status" | grep -o '"messages":\[.*\]' | head -1)
+        log "SEARCH FAILED for '$description': $fail_msg"
+        echo "{\"error\": \"search_failed\", \"description\": \"$description\", \"message\": \"Search execution failed\", \"search_id\": \"$sid\", \"details\": \"$fail_msg\"}" > "$output_file"
+        ((STATS_ERRORS++))
+        return 1
+      fi
+    done
+
+    if [ "$is_done" = "true" ]; then
+      # Get results with error checking (use GET request with query params)
+      http_code=$(curl -k -s -w "%{http_code}" -o "$output_file" \
+        -u "${SPLUNK_USER}:${SPLUNK_PASSWORD}" \
+        "https://${SPLUNK_HOST}:${SPLUNK_PORT}/services/search/jobs/$sid/results?output_mode=json&count=0" \
+        2>/dev/null)
+
+      if [ "$http_code" != "200" ]; then
+        log "RESULTS FETCH FAILED for '$description': HTTP $http_code"
+        echo "{\"error\": \"results_fetch_failed\", \"description\": \"$description\", \"http_code\": \"$http_code\"}" > "$output_file"
+        ((STATS_ERRORS++))
+        return 1
+      fi
+
+      log "Completed search: $description (${waited}s)"
+      return 0
+    else
+      log "TIMEOUT for '$description': Search did not complete in ${max_wait}s"
+      echo "{\"error\": \"timeout\", \"description\": \"$description\", \"message\": \"Search timed out after ${max_wait} seconds. For large environments, this search may need more time. Consider running manually: $search_query\", \"search_id\": \"$sid\"}" > "$output_file"
+      ((STATS_ERRORS++))
+      return 1
+    fi
+  }
+
+  # ==========================================================================
+  # 1. DASHBOARD VIEW STATISTICS
+  # ==========================================================================
+  ((task_num++))
+  info "Collecting dashboard view statistics..."
+
+  # Most viewed dashboards
+  run_usage_search \
+    'search index=_audit action=search info=granted search_type=dashboard | stats count as view_count, dc(user) as unique_users, latest(_time) as last_viewed by app, dashboard | sort - view_count | head 100' \
+    "$EXPORT_DIR/dynabridge_analytics/usage_analytics/dashboard_views_top100.json" \
+    "Top 100 most viewed dashboards"
+
+  # Dashboard views by day (trend)
+  run_usage_search \
+    'search index=_audit action=search info=granted search_type=dashboard | timechart span=1d count as views by dashboard limit=20' \
+    "$EXPORT_DIR/dynabridge_analytics/usage_analytics/dashboard_views_trend.json" \
+    "Dashboard view trends"
+
+  # Dashboards with ZERO views (candidates for elimination)
+  run_usage_search \
+    'search index=_audit action=search info=granted search_type=dashboard | stats count by dashboard | append [| rest /servicesNS/-/-/data/ui/views | table title | rename title as dashboard | eval count=0] | stats sum(count) as total_views by dashboard | where total_views=0 | table dashboard' \
+    "$EXPORT_DIR/dynabridge_analytics/usage_analytics/dashboards_never_viewed.json" \
+    "Dashboards with zero views"
+
+  progress_update "$task_num"
+  task_complete "Dashboard usage statistics"
+
+  # ==========================================================================
+  # 2. USER ACTIVITY METRICS
+  # ==========================================================================
+  ((task_num++))
+  info "Collecting user activity metrics..."
+
+  # Most active users
+  run_usage_search \
+    'search index=_audit action=search info=granted | stats count as search_count, dc(search) as unique_searches, latest(_time) as last_active by user | sort - search_count | head 50' \
+    "$EXPORT_DIR/dynabridge_analytics/usage_analytics/users_most_active.json" \
+    "Most active users"
+
+  # User activity by role
+  run_usage_search \
+    'search index=_audit action=search info=granted | stats count as searches, dc(user) as users by roles | sort - searches' \
+    "$EXPORT_DIR/dynabridge_analytics/usage_analytics/activity_by_role.json" \
+    "Activity by role"
+
+  # Inactive users (no activity in period)
+  run_usage_search \
+    'search index=_audit action=search info=granted | stats latest(_time) as last_active by user | where last_active < relative_time(now(), "-30d") | table user, last_active' \
+    "$EXPORT_DIR/dynabridge_analytics/usage_analytics/users_inactive.json" \
+    "Inactive users"
+
+  # User sessions per day
+  run_usage_search \
+    'search index=_audit action=search info=granted | timechart span=1d dc(user) as active_users' \
+    "$EXPORT_DIR/dynabridge_analytics/usage_analytics/daily_active_users.json" \
+    "Daily active users"
+
+  progress_update "$task_num"
+  task_complete "User activity metrics"
+
+  # ==========================================================================
+  # 3. ALERT EXECUTION STATISTICS
+  # ==========================================================================
+  ((task_num++))
+  info "Collecting alert execution statistics..."
+
+  # Most fired alerts
+  run_usage_search \
+    'search index=_internal sourcetype=scheduler status=success savedsearch_name=* | stats count as fire_count, avg(run_time) as avg_runtime, latest(_time) as last_fired by savedsearch_name, app | where fire_count > 0 | sort - fire_count | head 100' \
+    "$EXPORT_DIR/dynabridge_analytics/usage_analytics/alerts_most_fired.json" \
+    "Most fired alerts"
+
+  # Alerts that triggered actions (email, webhook, etc.)
+  run_usage_search \
+    'search index=_internal sourcetype=scheduler status=success alert_actions!="" | stats count as action_count, values(alert_actions) as actions by savedsearch_name | sort - action_count | head 50' \
+    "$EXPORT_DIR/dynabridge_analytics/usage_analytics/alerts_with_actions.json" \
+    "Alerts with triggered actions"
+
+  # Failed/skipped alerts
+  run_usage_search \
+    'search index=_internal sourcetype=scheduler (status=failed OR status=skipped) | stats count as failure_count, latest(status) as last_status, latest(reason) as last_reason by savedsearch_name | sort - failure_count | head 50' \
+    "$EXPORT_DIR/dynabridge_analytics/usage_analytics/alerts_failed.json" \
+    "Failed/skipped alerts"
+
+  # Alerts that NEVER fired (candidates for elimination)
+  run_usage_search \
+    'search index=_internal sourcetype=scheduler | stats count by savedsearch_name | append [| rest /servicesNS/-/-/saved/searches search="alert.track=1" | table title | rename title as savedsearch_name | eval count=0] | stats sum(count) as total_fires by savedsearch_name | where total_fires=0 | table savedsearch_name' \
+    "$EXPORT_DIR/dynabridge_analytics/usage_analytics/alerts_never_fired.json" \
+    "Alerts that never fired"
+
+  # Alert firing trend
+  run_usage_search \
+    'search index=_internal sourcetype=scheduler status=success | timechart span=1d count as alert_fires by savedsearch_name limit=20' \
+    "$EXPORT_DIR/dynabridge_analytics/usage_analytics/alert_firing_trend.json" \
+    "Alert firing trend"
+
+  progress_update "$task_num"
+  task_complete "Alert execution statistics"
+
+  # ==========================================================================
+  # 4. SEARCH USAGE PATTERNS
+  # ==========================================================================
+  ((task_num++))
+  info "Collecting search usage patterns..."
+
+  # Most common search commands
+  run_usage_search \
+    'search index=_audit action=search info=granted search=* | rex field=search "^\s*\|?\s*(?<first_command>\w+)" | stats count by first_command | sort - count | head 30' \
+    "$EXPORT_DIR/dynabridge_analytics/usage_analytics/search_commands_popular.json" \
+    "Most popular search commands"
+
+  # Searches by type (adhoc vs scheduled vs dashboard)
+  run_usage_search \
+    'search index=_audit action=search info=granted | stats count by search_type | sort - count' \
+    "$EXPORT_DIR/dynabridge_analytics/usage_analytics/search_by_type.json" \
+    "Searches by type"
+
+  # Long-running searches (performance concerns)
+  run_usage_search \
+    'search index=_audit action=search info=completed | where total_run_time > 60 | stats count as slow_runs, avg(total_run_time) as avg_time, max(total_run_time) as max_time by search_id, user | sort - avg_time | head 50' \
+    "$EXPORT_DIR/dynabridge_analytics/usage_analytics/searches_slow.json" \
+    "Slow running searches"
+
+  # Most common search terms (for understanding what users look for)
+  run_usage_search \
+    'search index=_audit action=search info=granted search=* | rex field=search "index=(?<searched_index>\w+)" | stats count by searched_index | sort - count | head 20' \
+    "$EXPORT_DIR/dynabridge_analytics/usage_analytics/indexes_searched.json" \
+    "Most searched indexes"
+
+  progress_update "$task_num"
+  task_complete "Search usage patterns"
+
+  # ==========================================================================
+  # 5. DATA SOURCE USAGE
+  # ==========================================================================
+  ((task_num++))
+  info "Collecting data source usage patterns..."
+
+  # Sourcetypes actually searched (vs configured)
+  run_usage_search \
+    'search index=_audit action=search info=granted search=* | rex field=search "sourcetype=(?<searched_sourcetype>[\w:_-]+)" | stats count as search_count, dc(user) as users by searched_sourcetype | sort - search_count | head 50' \
+    "$EXPORT_DIR/dynabridge_analytics/usage_analytics/sourcetypes_searched.json" \
+    "Most searched sourcetypes"
+
+  # Index usage (which indexes are actually queried)
+  run_usage_search \
+    'search index=_audit action=search info=granted search=* | rex field=search "index=(?<queried_index>[\w_-]+)" | stats count as query_count, dc(user) as users by queried_index | sort - query_count' \
+    "$EXPORT_DIR/dynabridge_analytics/usage_analytics/indexes_queried.json" \
+    "Indexes actually queried"
+
+  # Data volume by index (for capacity planning)
+  run_usage_search \
+    '| dbinspect index=* | stats sum(sizeOnDiskMB) as size_mb, sum(eventCount) as events by index | sort - size_mb' \
+    "$EXPORT_DIR/dynabridge_analytics/usage_analytics/index_sizes.json" \
+    "Index sizes and event counts"
+
+  progress_update "$task_num"
+  task_complete "Data source usage patterns"
+
+  # ==========================================================================
+  # 5b. DAILY VOLUME ANALYSIS (Critical for capacity planning)
+  # ==========================================================================
+  ((task_num++))
+  info "Collecting daily volume statistics (last 30 days)..."
+
+  # Daily volume by index (GB per day)
+  run_usage_search \
+    "search index=_internal source=*license_usage.log type=Usage earliest=-30d@d | timechart span=1d sum(b) as bytes by idx | eval gb=round(bytes/1024/1024/1024,2) | fields _time, idx, gb" \
+    "$EXPORT_DIR/dynabridge_analytics/usage_analytics/daily_volume_by_index.json" \
+    "Daily volume by index (GB)"
+
+  # Daily volume by sourcetype
+  run_usage_search \
+    "search index=_internal source=*license_usage.log type=Usage earliest=-30d@d | timechart span=1d sum(b) as bytes by st | eval gb=round(bytes/1024/1024/1024,2) | fields _time, st, gb" \
+    "$EXPORT_DIR/dynabridge_analytics/usage_analytics/daily_volume_by_sourcetype.json" \
+    "Daily volume by sourcetype (GB)"
+
+  # Total daily volume (for licensing)
+  run_usage_search \
+    "search index=_internal source=*license_usage.log type=Usage earliest=-30d@d | timechart span=1d sum(b) as bytes | eval gb=round(bytes/1024/1024/1024,2) | stats avg(gb) as avg_daily_gb, max(gb) as peak_daily_gb, sum(gb) as total_30d_gb" \
+    "$EXPORT_DIR/dynabridge_analytics/usage_analytics/daily_volume_summary.json" \
+    "Daily volume summary"
+
+  # Daily event count by index
+  run_usage_search \
+    "search index=_internal source=*metrics.log group=per_index_thruput earliest=-30d@d | timechart span=1d sum(ev) as events by series | rename series as index" \
+    "$EXPORT_DIR/dynabridge_analytics/usage_analytics/daily_events_by_index.json" \
+    "Daily event counts by index"
+
+  # Hourly pattern analysis (to identify peak hours)
+  run_usage_search \
+    "search index=_internal source=*license_usage.log type=Usage earliest=-7d | eval hour=strftime(_time, \"%H\") | stats sum(b) as bytes by hour | eval gb=round(bytes/1024/1024/1024,2) | sort hour" \
+    "$EXPORT_DIR/dynabridge_analytics/usage_analytics/hourly_volume_pattern.json" \
+    "Hourly volume pattern (last 7 days)"
+
+  # Top 20 indexes by daily average volume
+  run_usage_search \
+    "search index=_internal source=*license_usage.log type=Usage earliest=-30d@d | stats sum(b) as total_bytes by idx | eval daily_avg_gb=round((total_bytes/30)/1024/1024/1024,2) | sort - daily_avg_gb | head 20" \
+    "$EXPORT_DIR/dynabridge_analytics/usage_analytics/top_indexes_by_volume.json" \
+    "Top 20 indexes by daily average volume"
+
+  # Top 20 sourcetypes by daily average volume
+  run_usage_search \
+    "search index=_internal source=*license_usage.log type=Usage earliest=-30d@d | stats sum(b) as total_bytes by st | eval daily_avg_gb=round((total_bytes/30)/1024/1024/1024,2) | sort - daily_avg_gb | head 20" \
+    "$EXPORT_DIR/dynabridge_analytics/usage_analytics/top_sourcetypes_by_volume.json" \
+    "Top 20 sourcetypes by daily average volume"
+
+  # Volume by host (top 50)
+  run_usage_search \
+    "search index=_internal source=*license_usage.log type=Usage earliest=-30d@d | stats sum(b) as total_bytes by h | eval daily_avg_gb=round((total_bytes/30)/1024/1024/1024,2) | sort - daily_avg_gb | head 50" \
+    "$EXPORT_DIR/dynabridge_analytics/usage_analytics/top_hosts_by_volume.json" \
+    "Top 50 hosts by daily average volume"
+
+  progress_update "$task_num"
+  task_complete "Daily volume statistics"
+
+  # ==========================================================================
+  # 5c. INGESTION INFRASTRUCTURE (For understanding data collection methods)
+  # ==========================================================================
+  ((task_num++))
+  info "Collecting ingestion infrastructure information..."
+
+  # Create subdirectory for ingestion infrastructure
+  mkdir -p "$EXPORT_DIR/dynabridge_analytics/usage_analytics/ingestion_infrastructure"
+
+  # Connection type breakdown (UF cooked vs HF raw vs other)
+  run_usage_search \
+    "search index=_internal sourcetype=splunkd source=*metrics.log group=tcpin_connections earliest=-7d | stats dc(sourceHost) as unique_hosts, sum(kb) as total_kb by connectionType | eval total_gb=round(total_kb/1024/1024,2), daily_avg_gb=round(total_gb/7,2)" \
+    "$EXPORT_DIR/dynabridge_analytics/usage_analytics/ingestion_infrastructure/by_connection_type.json" \
+    "Ingestion by connection type (UF/HF/other)"
+
+  # Input method breakdown (splunktcp, http, udp, tcp, monitor, etc.)
+  run_usage_search \
+    'search index=_internal sourcetype=splunkd source=*metrics.log group=per_source_thruput earliest=-7d | rex field=series "^(?<input_type>[^:]+):" | stats sum(kb) as total_kb, dc(series) as unique_sources by input_type | eval total_gb=round(total_kb/1024/1024,2), daily_avg_gb=round(total_gb/7,2) | sort - total_kb' \
+    "$EXPORT_DIR/dynabridge_analytics/usage_analytics/ingestion_infrastructure/by_input_method.json" \
+    "Ingestion by input method"
+
+  # HEC (HTTP Event Collector) usage
+  run_usage_search \
+    'search index=_internal sourcetype=splunkd source=*metrics.log group=per_source_thruput series=http:* earliest=-7d | stats sum(kb) as total_kb, dc(series) as token_count | eval total_gb=round(total_kb/1024/1024,2), daily_avg_gb=round(total_gb/7,2)' \
+    "$EXPORT_DIR/dynabridge_analytics/usage_analytics/ingestion_infrastructure/hec_usage.json" \
+    "HTTP Event Collector usage"
+
+  # Forwarding hosts inventory (unique hosts sending data)
+  run_usage_search \
+    "search index=_internal sourcetype=splunkd source=*metrics.log group=tcpin_connections earliest=-7d | stats sum(kb) as total_kb, latest(_time) as last_seen, values(connectionType) as connection_types by sourceHost | eval total_gb=round(total_kb/1024/1024,2) | sort - total_kb | head 500" \
+    "$EXPORT_DIR/dynabridge_analytics/usage_analytics/ingestion_infrastructure/forwarding_hosts.json" \
+    "Forwarding hosts inventory (top 500)"
+
+  # Sourcetype categorization (detect OTel, cloud, security, etc.)
+  run_usage_search \
+    'search index=_internal source=*license_usage.log type=Usage earliest=-30d | stats sum(b) as bytes, dc(h) as unique_hosts by st | eval daily_avg_gb=round((bytes/30)/1024/1024/1024,2) | eval category=case(match(st,"^otel|^otlp|opentelemetry"),"opentelemetry", match(st,"^aws:|^azure:|^gcp:|^cloud"),"cloud", match(st,"^WinEventLog|^windows|^wmi"),"windows", match(st,"^linux|^syslog|^nix"),"linux_unix", match(st,"^cisco:|^pan:|^juniper:|^fortinet:|^f5:|^checkpoint"),"network_security", match(st,"^access_combined|^nginx|^apache|^iis"),"web", match(st,"^docker|^kube|^container"),"containers", 1=1,"other") | stats sum(daily_avg_gb) as daily_avg_gb, sum(unique_hosts) as unique_hosts, values(st) as sourcetypes by category | sort - daily_avg_gb' \
+    "$EXPORT_DIR/dynabridge_analytics/usage_analytics/ingestion_infrastructure/by_sourcetype_category.json" \
+    "Ingestion by sourcetype category"
+
+  # Data inputs configuration summary
+  run_usage_search \
+    '| rest /servicesNS/-/-/data/inputs/all | stats count by eai:acl.app, disabled | eval status=if(disabled="0","enabled","disabled") | stats count by eai:acl.app, status' \
+    "$EXPORT_DIR/dynabridge_analytics/usage_analytics/ingestion_infrastructure/data_inputs_by_app.json" \
+    "Data inputs by app"
+
+  # Syslog inputs (UDP/TCP)
+  run_usage_search \
+    'search index=_internal sourcetype=splunkd source=*metrics.log group=per_source_thruput earliest=-7d | search series=udp:* OR series=tcp:* | stats sum(kb) as total_kb by series | eval total_gb=round(total_kb/1024/1024,2) | sort - total_kb' \
+    "$EXPORT_DIR/dynabridge_analytics/usage_analytics/ingestion_infrastructure/syslog_inputs.json" \
+    "Syslog inputs (UDP/TCP)"
+
+  # Scripted inputs
+  run_usage_search \
+    '| rest /servicesNS/-/-/data/inputs/script | stats count by eai:acl.app, disabled, interval | eval status=if(disabled="0","enabled","disabled")' \
+    "$EXPORT_DIR/dynabridge_analytics/usage_analytics/ingestion_infrastructure/scripted_inputs.json" \
+    "Scripted inputs inventory"
+
+  # Summary: Total forwarding infrastructure
+  run_usage_search \
+    "search index=_internal sourcetype=splunkd source=*metrics.log group=tcpin_connections earliest=-7d | stats dc(sourceHost) as total_forwarding_hosts, sum(kb) as total_kb | eval total_gb=round(total_kb/1024/1024,2), daily_avg_gb=round(total_gb/7,2)" \
+    "$EXPORT_DIR/dynabridge_analytics/usage_analytics/ingestion_infrastructure/summary.json" \
+    "Ingestion infrastructure summary"
+
+  progress_update "$task_num"
+  task_complete "Ingestion infrastructure"
+
+  # ==========================================================================
+  # 5d. OWNERSHIP MAPPING (For user-centric migration)
+  # ==========================================================================
+  ((task_num++))
+  info "Collecting ownership information..."
+
+  # Dashboard ownership - maps each dashboard to its owner
+  run_usage_search \
+    '| rest /servicesNS/-/-/data/ui/views | table title, eai:acl.app, eai:acl.owner, eai:acl.sharing | rename title as dashboard, eai:acl.app as app, eai:acl.owner as owner, eai:acl.sharing as sharing' \
+    "$EXPORT_DIR/dynabridge_analytics/usage_analytics/dashboard_ownership.json" \
+    "Dashboard ownership mapping"
+
+  # Alert/Saved search ownership - maps each alert to its owner
+  run_usage_search \
+    '| rest /servicesNS/-/-/saved/searches | table title, eai:acl.app, eai:acl.owner, eai:acl.sharing, is_scheduled, alert.track | rename title as alert_name, eai:acl.app as app, eai:acl.owner as owner, eai:acl.sharing as sharing' \
+    "$EXPORT_DIR/dynabridge_analytics/usage_analytics/alert_ownership.json" \
+    "Alert/saved search ownership mapping"
+
+  # Ownership summary by user (how many dashboards and alerts each user owns)
+  run_usage_search \
+    '| rest /servicesNS/-/-/data/ui/views | stats count as dashboards by eai:acl.owner | rename eai:acl.owner as owner | append [| rest /servicesNS/-/-/saved/searches | stats count as alerts by eai:acl.owner | rename eai:acl.owner as owner] | stats sum(dashboards) as dashboards, sum(alerts) as alerts by owner | sort - dashboards' \
+    "$EXPORT_DIR/dynabridge_analytics/usage_analytics/ownership_summary.json" \
+    "Ownership summary by user"
+
+  progress_update "$task_num"
+  task_complete "Ownership mapping"
+
+  # ==========================================================================
+  # 5e. ALERT MIGRATION DATA (Critical for Dynatrace Alert Migration)
+  # ==========================================================================
+  ((task_num++))
+  info "Collecting comprehensive alert migration data..."
+
+  # Create subdirectory for alert migration data
+  mkdir -p "$EXPORT_DIR/dynabridge_analytics/usage_analytics/alert_migration"
+
+  # FULL ALERT DEFINITIONS - Complete alert configuration with ALL fields
+  # This is THE critical file for alert migration - includes schedule, conditions, actions
+  run_usage_search \
+    '| rest /servicesNS/-/-/saved/searches | search is_scheduled=1 OR alert.track=1 | table title, search, cron_schedule, dispatch.earliest_time, dispatch.latest_time, alert.severity, alert.track, alert.digest_mode, alert.expires, alert_condition, alert_threshold, alert_comparator, alert_type, alert.suppress, alert.suppress.fields, alert.suppress.period, counttype, quantity, relation, actions, disabled, eai:acl.owner, eai:acl.app, eai:acl.sharing, description, next_scheduled_time, triggered_alert_count | rename title as alert_name' \
+    "$EXPORT_DIR/dynabridge_analytics/usage_analytics/alert_migration/alert_definitions_full.json" \
+    "Full alert definitions (schedules, conditions, thresholds)"
+
+  # ALERT ACTION CONFIGURATIONS - Email recipients, webhook URLs, Slack channels, etc.
+  # Critical for Action Dispatcher migration architecture
+  run_usage_search \
+    '| rest /servicesNS/-/-/saved/searches | search actions!="" | table title, actions, action.email, action.email.to, action.email.cc, action.email.bcc, action.email.subject, action.email.message.alert, action.email.sendresults, action.email.inline, action.email.format, action.webhook, action.webhook.param.url, action.slack, action.slack.channel, action.slack.message, action.pagerduty, action.pagerduty.integration_key, action.script, action.script.filename, action.summary_index, action.summary_index._name, action.notable, action.notable.param.severity, action.lookup, eai:acl.owner, eai:acl.app | rename title as alert_name' \
+    "$EXPORT_DIR/dynabridge_analytics/usage_analytics/alert_migration/alert_action_configs.json" \
+    "Alert action configurations (email, webhook, Slack, PagerDuty)"
+
+  # ALERTS BY ACTION TYPE - Categorize alerts by their action type for migration planning
+  run_usage_search \
+    '| rest /servicesNS/-/-/saved/searches | search actions!="" | eval action_types=split(actions, ",") | mvexpand action_types | stats count, values(title) as alerts by action_types | sort - count' \
+    "$EXPORT_DIR/dynabridge_analytics/usage_analytics/alert_migration/alerts_by_action_type.json" \
+    "Alerts categorized by action type"
+
+  # ALERTS WITH EMAIL ACTIONS - Detailed email configuration for migration
+  run_usage_search \
+    '| rest /servicesNS/-/-/saved/searches | search action.email=1 | table title, action.email.to, action.email.cc, action.email.subject, action.email.sendresults, action.email.format, cron_schedule, alert.severity, eai:acl.owner, eai:acl.app | rename title as alert_name' \
+    "$EXPORT_DIR/dynabridge_analytics/usage_analytics/alert_migration/alerts_with_email.json" \
+    "Alerts with email action configuration"
+
+  # ALERTS WITH WEBHOOK ACTIONS - Webhook URLs for Dynatrace Workflow migration
+  run_usage_search \
+    '| rest /servicesNS/-/-/saved/searches | search action.webhook=1 | table title, action.webhook.param.url, cron_schedule, alert.severity, eai:acl.owner, eai:acl.app | rename title as alert_name' \
+    "$EXPORT_DIR/dynabridge_analytics/usage_analytics/alert_migration/alerts_with_webhook.json" \
+    "Alerts with webhook action configuration"
+
+  # ALERTS WITH SLACK ACTIONS - Slack channel configuration
+  run_usage_search \
+    '| rest /servicesNS/-/-/saved/searches | search action.slack=1 | table title, action.slack.channel, action.slack.message, cron_schedule, alert.severity, eai:acl.owner, eai:acl.app | rename title as alert_name' \
+    "$EXPORT_DIR/dynabridge_analytics/usage_analytics/alert_migration/alerts_with_slack.json" \
+    "Alerts with Slack action configuration"
+
+  # ALERTS WITH PAGERDUTY ACTIONS - PagerDuty integration configuration
+  run_usage_search \
+    '| rest /servicesNS/-/-/saved/searches | search action.pagerduty=1 | table title, action.pagerduty.integration_key, cron_schedule, alert.severity, eai:acl.owner, eai:acl.app | rename title as alert_name' \
+    "$EXPORT_DIR/dynabridge_analytics/usage_analytics/alert_migration/alerts_with_pagerduty.json" \
+    "Alerts with PagerDuty action configuration"
+
+  # ALERT SUPPRESSION SETTINGS - For deduplication migration
+  run_usage_search \
+    '| rest /servicesNS/-/-/saved/searches | search alert.suppress=1 | table title, alert.suppress, alert.suppress.fields, alert.suppress.period, cron_schedule, eai:acl.owner, eai:acl.app | rename title as alert_name' \
+    "$EXPORT_DIR/dynabridge_analytics/usage_analytics/alert_migration/alerts_with_suppression.json" \
+    "Alerts with suppression/throttling configuration"
+
+  # ALERT SCHEDULE ANALYSIS - Group alerts by schedule frequency for capacity planning
+  run_usage_search \
+    '| rest /servicesNS/-/-/saved/searches | search is_scheduled=1 | stats count by cron_schedule | sort - count' \
+    "$EXPORT_DIR/dynabridge_analytics/usage_analytics/alert_migration/alerts_by_schedule.json" \
+    "Alerts grouped by schedule frequency"
+
+  # ALERT SEVERITY DISTRIBUTION - For priority classification
+  run_usage_search \
+    '| rest /servicesNS/-/-/saved/searches | search alert.track=1 | stats count by alert.severity | sort - alert.severity' \
+    "$EXPORT_DIR/dynabridge_analytics/usage_analytics/alert_migration/alerts_by_severity.json" \
+    "Alerts grouped by severity level"
+
+  # HIGH FREQUENCY ALERTS - Alerts that run every minute (need special handling)
+  run_usage_search \
+    '| rest /servicesNS/-/-/saved/searches | search cron_schedule="* * * * *" OR cron_schedule="*/1 * * * *" | table title, search, cron_schedule, actions, alert.severity, eai:acl.owner, eai:acl.app | rename title as alert_name' \
+    "$EXPORT_DIR/dynabridge_analytics/usage_analytics/alert_migration/alerts_high_frequency.json" \
+    "High frequency alerts (1-minute interval)"
+
+  # ALERTS WITH COMPLEX SPL - Alerts using advanced SPL commands
+  run_usage_search \
+    '| rest /servicesNS/-/-/saved/searches | search alert.track=1 | eval has_join=if(match(search,"\\|\\s*join"),"yes","no"), has_transaction=if(match(search,"\\|\\s*transaction"),"yes","no"), has_eventstats=if(match(search,"\\|\\s*eventstats"),"yes","no"), has_streamstats=if(match(search,"\\|\\s*streamstats"),"yes","no"), has_append=if(match(search,"\\|\\s*append"),"yes","no") | where has_join="yes" OR has_transaction="yes" OR has_eventstats="yes" OR has_streamstats="yes" OR has_append="yes" | table title, has_join, has_transaction, has_eventstats, has_streamstats, has_append, eai:acl.owner, eai:acl.app | rename title as alert_name' \
+    "$EXPORT_DIR/dynabridge_analytics/usage_analytics/alert_migration/alerts_complex_spl.json" \
+    "Alerts using complex SPL commands"
+
+  # ALERTS DATA SOURCE ANALYSIS - Which indexes/sourcetypes each alert queries
+  run_usage_search \
+    '| rest /servicesNS/-/-/saved/searches | search alert.track=1 | rex field=search "index=(?<queried_index>[\\w_-]+)" | rex field=search "sourcetype=(?<queried_sourcetype>[\\w:_-]+)" | table title, queried_index, queried_sourcetype, eai:acl.owner, eai:acl.app | rename title as alert_name' \
+    "$EXPORT_DIR/dynabridge_analytics/usage_analytics/alert_migration/alerts_data_sources.json" \
+    "Alert data source mapping (index/sourcetype)"
+
+  progress_update "$task_num"
+  task_complete "Alert migration data"
+
+  # ==========================================================================
+  # 5f. USER/ROLE MAPPING (For Ownership Transfer)
+  # ==========================================================================
+  ((task_num++))
+  info "Collecting user and role mapping data..."
+
+  # Create subdirectory for RBAC data
+  mkdir -p "$EXPORT_DIR/dynabridge_analytics/usage_analytics/rbac"
+
+  # ALL USERS - Complete user list with roles
+  run_usage_search \
+    '| rest /services/authentication/users | table title, realname, email, roles, defaultApp, type, last_successful_login | rename title as username' \
+    "$EXPORT_DIR/dynabridge_analytics/usage_analytics/rbac/users_all.json" \
+    "All users with roles"
+
+  # USER ROLE SUMMARY - Which roles are assigned to which users
+  run_usage_search \
+    '| rest /services/authentication/users | eval role_list=split(roles, ";") | mvexpand role_list | stats count, values(title) as users by role_list | sort - count | rename role_list as role' \
+    "$EXPORT_DIR/dynabridge_analytics/usage_analytics/rbac/users_by_role.json" \
+    "Users grouped by role"
+
+  # ALL ROLES - Complete role definitions with capabilities
+  run_usage_search \
+    '| rest /services/authorization/roles | table title, imported_roles, capabilities, srchIndexesAllowed, srchIndexesDefault | rename title as role_name' \
+    "$EXPORT_DIR/dynabridge_analytics/usage_analytics/rbac/roles_all.json" \
+    "All roles with capabilities"
+
+  # ROLE CAPABILITIES - Which capabilities each role has
+  run_usage_search \
+    '| rest /services/authorization/roles | eval cap_list=split(capabilities, ";") | mvexpand cap_list | stats values(title) as roles by cap_list | sort cap_list | rename cap_list as capability' \
+    "$EXPORT_DIR/dynabridge_analytics/usage_analytics/rbac/capabilities_by_role.json" \
+    "Capabilities grouped by role"
+
+  # USERS WITH ADMIN CAPABILITIES - Important for ownership transfer
+  run_usage_search \
+    '| rest /services/authentication/users | search roles="*admin*" | table title, realname, email, roles | rename title as username' \
+    "$EXPORT_DIR/dynabridge_analytics/usage_analytics/rbac/users_admin.json" \
+    "Users with admin roles"
+
+  # EXTERNAL AUTHENTICATION CONFIGURATION (LDAP/SAML if configured)
+  curl -k -s -G -u "${SPLUNK_USER}:${SPLUNK_PASSWORD}" \
+    "https://${SPLUNK_HOST}:${SPLUNK_PORT}/services/authentication/providers/LDAP" \
+    -d "output_mode=json" \
+    > "$EXPORT_DIR/dynabridge_analytics/usage_analytics/rbac/ldap_config.json" 2>/dev/null
+
+  curl -k -s -G -u "${SPLUNK_USER}:${SPLUNK_PASSWORD}" \
+    "https://${SPLUNK_HOST}:${SPLUNK_PORT}/services/authentication/providers/SAML" \
+    -d "output_mode=json" \
+    > "$EXPORT_DIR/dynabridge_analytics/usage_analytics/rbac/saml_config.json" 2>/dev/null
+
+  # TEAM MAPPING SUGGESTION - Group assets by app to suggest team ownership
+  run_usage_search \
+    '| rest /servicesNS/-/-/saved/searches | stats dc(title) as alerts, values(eai:acl.owner) as owners by eai:acl.app | append [| rest /servicesNS/-/-/data/ui/views | stats dc(title) as dashboards, values(eai:acl.owner) as owners by eai:acl.app] | stats sum(alerts) as alerts, sum(dashboards) as dashboards, values(owners) as owners by eai:acl.app | rename eai:acl.app as app' \
+    "$EXPORT_DIR/dynabridge_analytics/usage_analytics/rbac/team_mapping_by_app.json" \
+    "Team mapping suggestion (by app)"
+
+  progress_update "$task_num"
+  task_complete "User/role mapping"
+
+  # ==========================================================================
+  # 6. SAVED SEARCH METADATA
+  # ==========================================================================
+  ((task_num++))
+  info "Collecting saved search metadata..."
+
+  curl -k -s -G -u "${SPLUNK_USER}:${SPLUNK_PASSWORD}" \
+    "https://${SPLUNK_HOST}:${SPLUNK_PORT}/services/saved/searches" \
+    -d "output_mode=json" -d "count=0" \
+    > "$EXPORT_DIR/dynabridge_analytics/usage_analytics/saved_searches_all.json" 2>/dev/null
+
+  # Saved searches by owner
+  run_usage_search \
+    '| rest /servicesNS/-/-/saved/searches | stats count by eai:acl.owner | sort - count | head 30' \
+    "$EXPORT_DIR/dynabridge_analytics/usage_analytics/saved_searches_by_owner.json" \
+    "Saved searches by owner"
+
+  progress_update "$task_num"
+  task_complete "Saved search metadata"
+
+  # ==========================================================================
+  # 7. SCHEDULER EXECUTION STATS
+  # ==========================================================================
+  ((task_num++))
+  info "Collecting scheduler execution statistics..."
+
+  curl -k -s -G -u "${SPLUNK_USER}:${SPLUNK_PASSWORD}" \
+    "https://${SPLUNK_HOST}:${SPLUNK_PORT}/services/search/jobs" \
+    -d "output_mode=json" -d "count=1000" \
+    > "$EXPORT_DIR/dynabridge_analytics/usage_analytics/recent_searches.json" 2>/dev/null
+
+  curl -k -s -G -u "${SPLUNK_USER}:${SPLUNK_PASSWORD}" \
+    "https://${SPLUNK_HOST}:${SPLUNK_PORT}/services/server/introspection/kvstore" \
+    -d "output_mode=json" \
+    > "$EXPORT_DIR/dynabridge_analytics/usage_analytics/kvstore_stats.json" 2>/dev/null
+
+  # Scheduler load over time
+  run_usage_search \
+    'search index=_internal sourcetype=scheduler | timechart span=1h count as scheduled_searches, avg(run_time) as avg_runtime' \
+    "$EXPORT_DIR/dynabridge_analytics/usage_analytics/scheduler_load.json" \
+    "Scheduler load over time"
+
+  progress_update "$task_num"
+  task_complete "Scheduler execution stats"
+
+  progress_complete
+
+  # ==========================================================================
+  # GENERATE USAGE INTELLIGENCE SUMMARY
+  # ==========================================================================
+
+  info "Generating usage intelligence summary..."
+
+  local summary_file="$EXPORT_DIR/dynabridge_analytics/usage_analytics/USAGE_INTELLIGENCE_SUMMARY.md"
+
+  cat > "$summary_file" << 'USAGE_EOF'
+# Usage Intelligence Summary
+
+This folder contains detailed usage analytics to help prioritize your Splunk-to-Dynatrace migration.
+
+## Key Files for Migration Prioritization
+
+### HIGH PRIORITY (Migrate First)
+| File | Description | Use For |
+|------|-------------|---------|
+| `dashboard_views_top100.json` | Most viewed dashboards | Prioritize these for migration |
+| `alerts_most_fired.json` | Most active alerts | Critical operational alerts |
+| `users_most_active.json` | Power users | Get their input on requirements |
+| `sourcetypes_searched.json` | Most queried data | Ensure these sources are in Dynatrace |
+
+### LOW PRIORITY (Consider Eliminating)
+| File | Description | Use For |
+|------|-------------|---------|
+| `dashboards_never_viewed.json` | Unused dashboards | Skip migration or archive |
+| `alerts_never_fired.json` | Alerts that never trigger | Review if still needed |
+| `users_inactive.json` | Inactive users | Don't migrate their personal content |
+| `alerts_failed.json` | Broken alerts | Fix or remove |
+
+### CAPACITY PLANNING
+| File | Description | Use For |
+|------|-------------|---------|
+| `index_sizes.json` | Data volume by index | Estimate Dynatrace Grail storage |
+| `indexes_queried.json` | Which indexes are used | Prioritize data ingestion |
+| `scheduler_load.json` | Alert/report load | Plan Dynatrace workflow capacity |
+
+### ALERT MIGRATION (NEW in v4.0.0)
+| File | Description | Use For |
+|------|-------------|---------|
+| `alert_migration/alert_definitions_full.json` | Complete alert configs | Full SPL, schedules, thresholds, conditions |
+| `alert_migration/alert_action_configs.json` | Action configurations | Email, webhook, Slack, PagerDuty settings |
+| `alert_migration/alerts_by_action_type.json` | Alerts grouped by action | Migration planning by action type |
+| `alert_migration/alerts_with_email.json` | Email alert details | Email recipients, subjects, formats |
+| `alert_migration/alerts_with_webhook.json` | Webhook alert details | Webhook URLs for workflow migration |
+| `alert_migration/alerts_with_slack.json` | Slack alert details | Slack channels and messages |
+| `alert_migration/alerts_with_pagerduty.json` | PagerDuty alert details | Integration keys |
+| `alert_migration/alerts_with_suppression.json` | Suppression settings | Deduplication migration |
+| `alert_migration/alerts_by_schedule.json` | Schedule distribution | Capacity planning |
+| `alert_migration/alerts_by_severity.json` | Severity distribution | Priority classification |
+| `alert_migration/alerts_high_frequency.json` | 1-minute interval alerts | Special handling required |
+| `alert_migration/alerts_complex_spl.json` | Alerts with join/transaction | Complex SPL migration challenges |
+| `alert_migration/alerts_data_sources.json` | Index/sourcetype per alert | Data dependency mapping |
+
+### USER/ROLE MAPPING (NEW in v4.0.0)
+| File | Description | Use For |
+|------|-------------|---------|
+| `rbac/users_all.json` | All users with roles | User inventory for ownership transfer |
+| `rbac/users_by_role.json` | Users grouped by role | Team identification |
+| `rbac/roles_all.json` | Role definitions | Capability mapping |
+| `rbac/capabilities_by_role.json` | Capabilities by role | Permission analysis |
+| `rbac/users_admin.json` | Admin users | Key stakeholders |
+| `rbac/ldap_config.json` | LDAP configuration | External auth mapping |
+| `rbac/saml_config.json` | SAML configuration | SSO integration details |
+| `rbac/team_mapping_by_app.json` | Assets grouped by app | Team ownership suggestions |
+
+## Migration Decision Framework
+
+```
+                    ┌─────────────────────────────────────┐
+                    │         USAGE FREQUENCY             │
+                    │    High              Low            │
+        ┌───────────┼─────────────────────────────────────┤
+        │   High    │  MIGRATE FIRST    INVESTIGATE      │
+ VALUE  │           │  (Critical)       (Why not used?)  │
+        ├───────────┼─────────────────────────────────────┤
+        │   Low     │  MIGRATE LATER    ELIMINATE        │
+        │           │  (Nice to have)   (Dead weight)    │
+        └───────────┴─────────────────────────────────────┘
+```
+
+## Interpreting the Data
+
+### Dashboard Views (`dashboard_views_top100.json`)
+- `view_count`: Total views in the analysis period
+- `unique_users`: Number of different users who viewed it
+- `last_viewed`: When it was last accessed
+- **Migration Priority**: High view_count + multiple unique_users = HIGH priority
+
+### Alert Executions (`alerts_most_fired.json`)
+- `fire_count`: Number of times the alert executed
+- `avg_runtime`: Average execution time (seconds)
+- `last_fired`: Most recent execution
+- **Migration Priority**: Frequent firing + triggered actions = HIGH priority
+
+### User Activity (`users_most_active.json`)
+- `search_count`: Total searches run by user
+- `unique_searches`: Variety of different searches
+- `last_active`: Most recent activity
+- **Stakeholder Priority**: High activity users should be consulted
+
+## Recommended Migration Order
+
+1. **Phase 1 - Critical Operations**
+   - Top 20 most-viewed dashboards
+   - Top 20 most-fired alerts with actions
+   - Data sources used by these dashboards/alerts
+
+2. **Phase 2 - Active Users**
+   - Dashboards used by top 20 most active users
+   - Saved searches from power users
+   - Frequently searched indexes
+
+3. **Phase 3 - Long Tail**
+   - Remaining used dashboards
+   - Remaining active alerts
+   - Archive or document unused items
+
+4. **Phase 4 - Cleanup**
+   - Do NOT migrate items from "never viewed/fired" lists
+   - Document decisions for audit trail
+USAGE_EOF
+
+  success "Usage intelligence collected (see _usage_analytics/USAGE_INTELLIGENCE_SUMMARY.md)"
+}
+
+collect_index_stats() {
+  if [ "$COLLECT_INDEXES" = false ]; then
+    return 0
+  fi
+
+  # Define collection tasks
+  local tasks=(
+    "indexes_conf:Index configuration files"
+    "index_details:Index details via REST API"
+    "data_inputs:Data input configurations"
+    "system_configs:System-level configs"
+  )
+
+  progress_init "Collecting Index & Data Statistics" "${#tasks[@]}"
+
+  local task_num=0
+
+  # 1. System indexes.conf
+  ((task_num++))
+  if [ -f "$SPLUNK_HOME/etc/system/local/indexes.conf" ]; then
+    cp "$SPLUNK_HOME/etc/system/local/indexes.conf" "$EXPORT_DIR/dynabridge_analytics/indexes/"
+  fi
+  progress_update "$task_num"
+  task_complete "System indexes.conf"
+
+  # 2. REST API index details (use -G to force GET request)
+  ((task_num++))
+  if [ -n "$SPLUNK_USER" ]; then
+    curl -k -s -G -u "${SPLUNK_USER}:${SPLUNK_PASSWORD}" \
+      "https://${SPLUNK_HOST}:${SPLUNK_PORT}/services/data/indexes" \
+      -d "output_mode=json" -d "count=0" \
+      > "$EXPORT_DIR/dynabridge_analytics/indexes/indexes_detailed.json" 2>/dev/null
+
+    local index_count=$(grep -o '"title"' "$EXPORT_DIR/dynabridge_analytics/indexes/indexes_detailed.json" 2>/dev/null | wc -l | tr -d ' ')
+    STATS_INDEXES=$index_count
+  fi
+  progress_update "$task_num"
+  task_complete "Index details (REST API)"
+
+  # 3. Data inputs (use -G to force GET request)
+  ((task_num++))
+  if [ -n "$SPLUNK_USER" ]; then
+    curl -k -s -G -u "${SPLUNK_USER}:${SPLUNK_PASSWORD}" \
+      "https://${SPLUNK_HOST}:${SPLUNK_PORT}/services/data/inputs/all" \
+      -d "output_mode=json" -d "count=0" \
+      > "$EXPORT_DIR/dynabridge_analytics/indexes/data_inputs.json" 2>/dev/null
+  fi
+  progress_update "$task_num"
+  task_complete "Data inputs"
+
+  # 4. System-level inputs/outputs
+  ((task_num++))
+  for conf_file in "inputs.conf" "outputs.conf" "server.conf"; do
+    if [ -f "$SPLUNK_HOME/etc/system/local/$conf_file" ]; then
+      cp "$SPLUNK_HOME/etc/system/local/$conf_file" "$EXPORT_DIR/_system/local/"
+    fi
+  done
+  progress_update "$task_num"
+  task_complete "System configs"
+
+  progress_complete
+
+  # Show index histogram if we have data
+  if [ -f "$EXPORT_DIR/dynabridge_analytics/indexes/indexes_detailed.json" ] && [ -n "$SPLUNK_USER" ]; then
+    # Try to extract index sizes for histogram using Python (no jq dependency)
+    local index_sizes=()
+    while IFS= read -r line; do
+      # Parse each JSON line using Python inline
+      local parsed=$($PYTHON_CMD -c "
+import json
+import sys
+try:
+    item = json.loads('''$line''')
+    name = item.get('name', '')
+    size = item.get('content', {}).get('currentDBSizeMB', 0)
+    if name and size and size != 'null':
+        print(f'{name}:{int(float(size))}')
+except:
+    pass
+" 2>/dev/null)
+      if [ -n "$parsed" ]; then
+        index_sizes+=("$parsed")
+      fi
+    done < <(json_iterate "$EXPORT_DIR/dynabridge_analytics/indexes/indexes_detailed.json" ".entry" 2>/dev/null | head -20)
+
+    if [ ${#index_sizes[@]} -gt 0 ]; then
+      show_histogram "Index Sizes (MB) - Top 20" "${index_sizes[@]}"
+    fi
+  fi
+
+  success "Index statistics collected (${STATS_INDEXES} indexes)"
+}
+
+collect_audit_sample() {
+  if [ "$COLLECT_AUDIT" = false ]; then
+    return 0
+  fi
+
+  progress "Collecting audit log sample..."
+
+  local audit_log="$SPLUNK_HOME/var/log/splunk/audit.log"
+
+  if [ -f "$audit_log" ] && [ -r "$audit_log" ]; then
+    mkdir -p "$EXPORT_DIR/_audit_sample"
+    tail -10000 "$audit_log" > "$EXPORT_DIR/_audit_sample/audit_sample.log" 2>/dev/null
+    success "Collected 10,000 most recent audit entries"
+  else
+    warning "Could not read audit log (permission denied or not found)"
+  fi
+}
+
+# =============================================================================
+# SUMMARY GENERATION
+# =============================================================================
+
+generate_summary() {
+  progress "Generating environment summary..."
+
+  local summary_file="$EXPORT_DIR/dynasplunk-env-summary.md"
+
+  cat > "$summary_file" << EOF
+# DynaSplunk Environment Summary
+
+**Export Date**: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
+**Hostname**: $(get_hostname)
+**Export Tool Version**: $SCRIPT_VERSION
+
+---
+
+## Environment Overview
+
+| Attribute | Value |
+|-----------|-------|
+| **Product** | Splunk ${SPLUNK_FLAVOR^} |
+| **Role** | ${SPLUNK_ROLE//_/ } |
+| **Architecture** | ${SPLUNK_ARCHITECTURE^} |
+| **SPLUNK_HOME** | $SPLUNK_HOME |
+
+---
+
+## Export Statistics
+
+| Category | Count |
+|----------|-------|
+| **Applications Exported** | $STATS_APPS |
+| **Dashboards** | $STATS_DASHBOARDS |
+| **Alerts** | $STATS_ALERTS |
+| **Users** | $STATS_USERS |
+| **Indexes** | $STATS_INDEXES |
+| **Errors** | $STATS_ERRORS |
+
+---
+
+## Applications Included
+
+EOF
+
+  for app in "${SELECTED_APPS[@]}"; do
+    echo "- $app" >> "$summary_file"
+  done
+
+  cat >> "$summary_file" << EOF
+
+---
+
+## Data Categories Collected
+
+| Category | Collected |
+|----------|-----------|
+| Configuration Files | $([ "$COLLECT_CONFIGS" = true ] && echo "Yes" || echo "No") |
+| Dashboards | $([ "$COLLECT_DASHBOARDS" = true ] && echo "Yes" || echo "No") |
+| Alerts & Saved Searches | $([ "$COLLECT_ALERTS" = true ] && echo "Yes" || echo "No") |
+| Users & RBAC | $([ "$COLLECT_RBAC" = true ] && echo "Yes" || echo "No") |
+| Usage Analytics | $([ "$COLLECT_USAGE" = true ] && echo "Yes (${USAGE_PERIOD})" || echo "No") |
+| Index Statistics | $([ "$COLLECT_INDEXES" = true ] && echo "Yes" || echo "No") |
+| Lookup Tables | $([ "$COLLECT_LOOKUPS" = true ] && echo "Yes" || echo "No") |
+| Audit Log Sample | $([ "$COLLECT_AUDIT" = true ] && echo "Yes" || echo "No") |
+
+---
+
+## Next Steps
+
+1. Download the export file from this server
+2. Open DynaBridge for Splunk in Dynatrace
+3. Navigate to: Migration Workspace → Project Initialization
+4. Upload the .tar.gz file
+5. DynaBridge will analyze your environment and show:
+   - Migration readiness assessment
+   - Dashboard conversion preview
+   - Alert conversion checklist
+   - Data pipeline requirements
+
+---
+
+*Generated by DynaBridge Splunk Export Tool v$SCRIPT_VERSION*
+EOF
+
+  success "Summary generated: dynasplunk-env-summary.md"
+}
+
+# =============================================================================
+# MANIFEST GENERATION (Guaranteed Schema for DynaBridge)
+# =============================================================================
+
+generate_manifest() {
+  progress "Generating manifest.json (standardized schema)..."
+
+  local manifest_file="$EXPORT_DIR/dynabridge_analytics/manifest.json"
+
+  # Get Splunk version
+  local splunk_version="unknown"
+  local splunk_build="unknown"
+  if [ -f "$SPLUNK_HOME/etc/splunk.version" ]; then
+    splunk_version=$(grep "^VERSION" "$SPLUNK_HOME/etc/splunk.version" 2>/dev/null | cut -d= -f2 | tr -d ' ')
+    splunk_build=$(grep "^BUILD" "$SPLUNK_HOME/etc/splunk.version" 2>/dev/null | cut -d= -f2 | tr -d ' ')
+  fi
+
+  # Get IP addresses using Python helper (no jq dependency)
+  local ip_addresses=$(get_host_ips_json 2>/dev/null || echo "[]")
+  [ -z "$ip_addresses" ] && ip_addresses="[]"
+
+  # Calculate export duration
+  local export_duration=$(($(date +%s) - EXPORT_START_TIME))
+
+  # Count saved searches (separate from alerts)
+  local saved_search_count=0
+  for app in "${SELECTED_APPS[@]}"; do
+    for conf_dir in "default" "local"; do
+      if [ -f "$EXPORT_DIR/$app/$conf_dir/savedsearches.conf" ]; then
+        local count=$(grep -c '^\[' "$EXPORT_DIR/$app/$conf_dir/savedsearches.conf" 2>/dev/null | head -1 | tr -d '[:space:]')
+        [ -z "$count" ] || ! [[ "$count" =~ ^[0-9]+$ ]] && count=0
+        saved_search_count=$((saved_search_count + count))
+      fi
+    done
+  done
+
+  # Count macros
+  local macro_count=0
+  for app in "${SELECTED_APPS[@]}"; do
+    for conf_dir in "default" "local"; do
+      if [ -f "$EXPORT_DIR/$app/$conf_dir/macros.conf" ]; then
+        local count=$(grep -c '^\[' "$EXPORT_DIR/$app/$conf_dir/macros.conf" 2>/dev/null | head -1 | tr -d '[:space:]')
+        [ -z "$count" ] || ! [[ "$count" =~ ^[0-9]+$ ]] && count=0
+        macro_count=$((macro_count + count))
+      fi
+    done
+  done
+
+  # Count props stanzas
+  local props_count=0
+  for app in "${SELECTED_APPS[@]}"; do
+    for conf_dir in "default" "local"; do
+      if [ -f "$EXPORT_DIR/$app/$conf_dir/props.conf" ]; then
+        local count=$(grep -c '^\[' "$EXPORT_DIR/$app/$conf_dir/props.conf" 2>/dev/null | head -1 | tr -d '[:space:]')
+        [ -z "$count" ] || ! [[ "$count" =~ ^[0-9]+$ ]] && count=0
+        props_count=$((props_count + count))
+      fi
+    done
+  done
+
+  # Count transforms stanzas
+  local transforms_count=0
+  for app in "${SELECTED_APPS[@]}"; do
+    for conf_dir in "default" "local"; do
+      if [ -f "$EXPORT_DIR/$app/$conf_dir/transforms.conf" ]; then
+        local count=$(grep -c '^\[' "$EXPORT_DIR/$app/$conf_dir/transforms.conf" 2>/dev/null | head -1 | tr -d '[:space:]')
+        [ -z "$count" ] || ! [[ "$count" =~ ^[0-9]+$ ]] && count=0
+        transforms_count=$((transforms_count + count))
+      fi
+    done
+  done
+
+  # Count Dashboard Studio dashboards separately (use ls instead of find for container compatibility)
+  # NOTE: Only count .json files that are NOT _definition.json (those are extracted definitions, not separate dashboards)
+  local studio_count=0
+  if [ -d "$EXPORT_DIR/dashboards_studio" ]; then
+    # Count json files in dashboards_studio folder, excluding _definition.json files
+    studio_count=$(ls -1 "$EXPORT_DIR/dashboards_studio/"*.json 2>/dev/null | grep -v '_definition\.json$' | wc -l | tr -d ' ')
+  fi
+
+  # Use REST API count if available, otherwise fall back to XML file count
+  local dashboard_total=$STATS_DASHBOARDS
+  if [ "$dashboard_total" -eq 0 ] && [ "$STATS_DASHBOARDS_XML" -gt 0 ]; then
+    dashboard_total=$STATS_DASHBOARDS_XML
+    log "Using XML file count for dashboards (REST API unavailable): $dashboard_total"
+  fi
+
+  # Count classic dashboards (total minus studio)
+  local classic_count=$((dashboard_total - studio_count))
+  if [ "$classic_count" -lt 0 ]; then classic_count=0; fi
+
+  # Build apps array using Python helper (replaces jq)
+  local apps_json=$(build_apps_json "$EXPORT_DIR" "${SELECTED_APPS[@]}")
+  # Ensure we have valid JSON (fallback to empty array if empty or invalid)
+  if [ -z "$apps_json" ] || [ "$apps_json" = "null" ]; then
+    apps_json="[]"
+  fi
+
+  # Count total files (use ls -lR instead of find for container compatibility)
+  local total_files=$(ls -lR "$EXPORT_DIR" 2>/dev/null | grep -c "^-" | tr -d ' ')
+  local total_size=$(du -sb "$EXPORT_DIR" 2>/dev/null | cut -f1)
+
+  # Build usage intelligence summary using Python helper (replaces jq)
+  local usage_intel_json="{}"
+  if [ -d "$EXPORT_DIR/dynabridge_analytics/usage_analytics" ]; then
+    progress "Extracting usage intelligence for manifest..."
+    usage_intel_json=$(build_usage_intel_json "$EXPORT_DIR")
+    # Ensure we have valid JSON (fallback to empty object if empty or invalid)
+    if [ -z "$usage_intel_json" ] || [ "$usage_intel_json" = "null" ]; then
+      usage_intel_json="{}"
+    fi
+  fi
+
+  # Generate manifest
+  cat > "$manifest_file" << MANIFEST_EOF
+{
+  "schema_version": "3.4",
+  "export_tool": "dynabridge-splunk-export",
+  "export_tool_version": "$SCRIPT_VERSION",
+  "export_timestamp": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
+  "export_duration_seconds": $export_duration,
+
+  "source": {
+    "hostname": "$(get_hostname short)",
+    "fqdn": "$(get_hostname fqdn)",
+    "platform": "$(uname -s)",
+    "platform_version": "$(uname -r)",
+    "architecture": "$(uname -m)"
+  },
+
+  "splunk": {
+    "home": "$SPLUNK_HOME",
+    "version": "$splunk_version",
+    "build": "$splunk_build",
+    "flavor": "$SPLUNK_FLAVOR",
+    "role": "$SPLUNK_ROLE",
+    "architecture": "$SPLUNK_ARCHITECTURE",
+    "is_shc_member": $IS_SHC_MEMBER,
+    "is_shc_captain": $IS_SHC_CAPTAIN,
+    "is_idx_cluster": $IS_IDX_CLUSTER,
+    "is_cloud": $IS_CLOUD
+  },
+
+  "collection": {
+    "configs": $COLLECT_CONFIGS,
+    "dashboards": $COLLECT_DASHBOARDS,
+    "alerts": $COLLECT_ALERTS,
+    "rbac": $COLLECT_RBAC,
+    "usage_analytics": $COLLECT_USAGE,
+    "usage_period": "$USAGE_PERIOD",
+    "indexes": $COLLECT_INDEXES,
+    "lookups": $COLLECT_LOOKUPS,
+    "audit_sample": $COLLECT_AUDIT,
+    "data_anonymized": $ANONYMIZE_DATA
+  },
+
+  "statistics": {
+    "apps_exported": $STATS_APPS,
+    "dashboards_classic": $classic_count,
+    "dashboards_studio": $studio_count,
+    "dashboards_total": $dashboard_total,
+    "alerts": $STATS_ALERTS,
+    "saved_searches": $saved_search_count,
+    "users": $STATS_USERS,
+    "roles": 0,
+    "indexes": $STATS_INDEXES,
+    "macros": $macro_count,
+    "props_stanzas": $props_count,
+    "transforms_stanzas": $transforms_count,
+    "errors": $STATS_ERRORS,
+    "total_files": $total_files,
+    "total_size_bytes": ${total_size:-0}
+  },
+
+  "apps": $apps_json,
+
+  "usage_intelligence": $usage_intel_json
+}
+MANIFEST_EOF
+
+  # Validate and format JSON using Python
+  local validation_result=$(json_format "$manifest_file")
+  if [ "$validation_result" = "valid" ]; then
+    success "manifest.json generated and validated"
+  else
+    warning "manifest.json generated but may have JSON errors: $validation_result"
+  fi
+
+  # Update global STATS_DASHBOARDS with corrected total (for subsequent summaries)
+  STATS_DASHBOARDS=$dashboard_total
+}
+
+# =============================================================================
+# DATA ANONYMIZATION FUNCTIONS
+# =============================================================================
+
+# Generate a consistent hash-based ID for anonymization
+# This ensures the same input always produces the same output
+generate_anon_id() {
+  local input="$1"
+  local prefix="$2"
+  local length="${3:-8}"
+
+  # Use SHA256 and take first N characters (lowercase hex)
+  local hash=""
+  if command_exists sha256sum; then
+    hash=$(echo -n "$input" | sha256sum | cut -c1-"$length")
+  elif command_exists shasum; then
+    hash=$(echo -n "$input" | shasum -a 256 | cut -c1-"$length")
+  elif command_exists md5sum; then
+    hash=$(echo -n "$input" | md5sum | cut -c1-"$length")
+  elif command_exists md5; then
+    hash=$(echo -n "$input" | md5 | cut -c1-"$length")
+  else
+    # Fallback: use base64 encoding of input
+    hash=$(echo -n "$input" | base64 | tr -d '=' | tr '+/' 'ab' | cut -c1-"$length" | tr '[:upper:]' '[:lower:]')
+  fi
+
+  echo "${prefix}${hash}"
+}
+
+# Get or create anonymized email for a given real email
+get_anon_email() {
+  local real_email="$1"
+
+  # Skip if empty or already anonymized
+  if [ -z "$real_email" ] || [[ "$real_email" == *"@anon.dynabridge.local"* ]]; then
+    echo "$real_email"
+    return
+  fi
+
+  # Check if we already have a mapping
+  if [ -n "${EMAIL_MAP[$real_email]:-}" ]; then
+    echo "${EMAIL_MAP[$real_email]}"
+    return
+  fi
+
+  # Generate new anonymized email
+  local anon_id=$(generate_anon_id "$real_email" "user" 6)
+  local anon_email="${anon_id}@anon.dynabridge.local"
+
+  # Store mapping
+  EMAIL_MAP["$real_email"]="$anon_email"
+  ((ANON_EMAIL_COUNTER++))
+
+  echo "$anon_email"
+}
+
+# Get or create anonymized hostname for a given real hostname
+get_anon_hostname() {
+  local real_host="$1"
+
+  # Skip if empty or already anonymized
+  if [ -z "$real_host" ] || [[ "$real_host" == "host-"* && "$real_host" == *".anon.local" ]]; then
+    echo "$real_host"
+    return
+  fi
+
+  # Skip common non-sensitive hostnames
+  if [[ "$real_host" == "localhost" || "$real_host" == "127.0.0.1" ]]; then
+    echo "$real_host"
+    return
+  fi
+
+  # Check if we already have a mapping
+  if [ -n "${HOST_MAP[$real_host]:-}" ]; then
+    echo "${HOST_MAP[$real_host]}"
+    return
+  fi
+
+  # Generate new anonymized hostname
+  local anon_id=$(generate_anon_id "$real_host" "" 8)
+  local anon_host="host-${anon_id}.anon.local"
+
+  # Store mapping
+  HOST_MAP["$real_host"]="$anon_host"
+  ((ANON_HOST_COUNTER++))
+
+  echo "$anon_host"
+}
+
+# Get or create anonymized webhook URL for a given real webhook URL
+get_anon_webhook_url() {
+  local real_url="$1"
+
+  # Skip if empty or already anonymized
+  if [ -z "$real_url" ] || [[ "$real_url" == *"webhook.anon.dynabridge.local"* ]]; then
+    echo "$real_url"
+    return
+  fi
+
+  # Check if we already have a mapping
+  if [ -n "${WEBHOOK_MAP[$real_url]:-}" ]; then
+    echo "${WEBHOOK_MAP[$real_url]}"
+    return
+  fi
+
+  # Generate new anonymized webhook URL
+  local anon_id=$(generate_anon_id "$real_url" "" 12)
+  local anon_url="https://webhook.anon.dynabridge.local/hook-${anon_id}"
+
+  # Store mapping
+  WEBHOOK_MAP["$real_url"]="$anon_url"
+  ((ANON_WEBHOOK_COUNTER++))
+
+  echo "$anon_url"
+}
+
+# Get or create anonymized API key/token for a given real key
+get_anon_api_key() {
+  local real_key="$1"
+  local key_type="${2:-API}"  # Type prefix: API, PAGERDUTY, SLACK, etc.
+
+  # Skip if empty or already anonymized
+  if [ -z "$real_key" ] || [[ "$real_key" == "[${key_type}-KEY-"*"]" ]]; then
+    echo "$real_key"
+    return
+  fi
+
+  # Check if we already have a mapping
+  if [ -n "${APIKEY_MAP[$real_key]:-}" ]; then
+    echo "${APIKEY_MAP[$real_key]}"
+    return
+  fi
+
+  # Generate new anonymized key (preserve uniqueness for correlation)
+  local anon_id=$(generate_anon_id "$real_key" "" 8)
+  local anon_key="[${key_type}-KEY-${anon_id}]"
+
+  # Store mapping
+  APIKEY_MAP["$real_key"]="$anon_key"
+  ((ANON_APIKEY_COUNTER++))
+
+  echo "$anon_key"
+}
+
+# Get or create anonymized Slack channel for a given real channel
+get_anon_slack_channel() {
+  local real_channel="$1"
+
+  # Skip if empty or already anonymized
+  if [ -z "$real_channel" ] || [[ "$real_channel" == "#anon-channel-"* ]]; then
+    echo "$real_channel"
+    return
+  fi
+
+  # Check if we already have a mapping
+  if [ -n "${SLACK_CHANNEL_MAP[$real_channel]:-}" ]; then
+    echo "${SLACK_CHANNEL_MAP[$real_channel]}"
+    return
+  fi
+
+  # Generate new anonymized channel name
+  local anon_id=$(generate_anon_id "$real_channel" "" 6)
+  local anon_channel="#anon-channel-${anon_id}"
+
+  # Store mapping
+  SLACK_CHANNEL_MAP["$real_channel"]="$anon_channel"
+  ((ANON_SLACK_COUNTER++))
+
+  echo "$anon_channel"
+}
+
+# Get or create anonymized username for a given real username
+get_anon_username() {
+  local real_user="$1"
+
+  # Skip if empty or already anonymized
+  if [ -z "$real_user" ] || [[ "$real_user" == "anon-user-"* ]]; then
+    echo "$real_user"
+    return
+  fi
+
+  # Skip system/generic users
+  if [[ "$real_user" == "nobody" || "$real_user" == "admin" || "$real_user" == "system" || \
+        "$real_user" == "splunk-system-user" || "$real_user" == "root" ]]; then
+    echo "$real_user"
+    return
+  fi
+
+  # Check if we already have a mapping
+  if [ -n "${USERNAME_MAP[$real_user]:-}" ]; then
+    echo "${USERNAME_MAP[$real_user]}"
+    return
+  fi
+
+  # Generate new anonymized username
+  local anon_id=$(generate_anon_id "$real_user" "" 6)
+  local anon_user="anon-user-${anon_id}"
+
+  # Store mapping
+  USERNAME_MAP["$real_user"]="$anon_user"
+  ((ANON_USERNAME_COUNTER++))
+
+  echo "$anon_user"
+}
+
+# Collect files recursively with specific extensions (container-compatible alternative to find)
+# Usage: collect_files_recursive <directory> <extensions_array_name>
+# Extensions should be space-separated, e.g., "json conf xml csv txt meta"
+collect_files_recursive() {
+  local dir="$1"
+  local extensions="$2"  # Space-separated list: "json conf xml csv txt meta"
+
+  # Process files in current directory
+  for ext in $extensions; do
+    for file in "$dir"/*."$ext"; do
+      [ -f "$file" ] && echo "$file"
+    done
+  done
+
+  # Recurse into subdirectories
+  for subdir in "$dir"/*/; do
+    [ -d "$subdir" ] && collect_files_recursive "$subdir" "$extensions"
+  done
+}
+
+# Anonymize a single file
+anonymize_file() {
+  local file="$1"
+  local file_ext="${file##*.}"
+  local temp_file="${file}.anon.tmp"
+  local modified=false
+
+  # Skip binary files, empty files, and already processed files
+  if [ ! -s "$file" ] || [[ "$file" == *.tmp ]]; then
+    return
+  fi
+
+  # Check if file is text (skip binary)
+  if ! file "$file" 2>/dev/null | grep -qE 'text|JSON|XML'; then
+    return
+  fi
+
+  local content
+  content=$(cat "$file" 2>/dev/null) || return
+  local new_content="$content"
+
+  # ==========================================================================
+  # ANONYMIZE EMAIL ADDRESSES
+  # ==========================================================================
+  # Match common email patterns
+  local email_regex='[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
+
+  # Extract all emails from content
+  local emails
+  emails=$(echo "$content" | grep -oE "$email_regex" 2>/dev/null | sort -u) || true
+
+  for email in $emails; do
+    # Skip obviously fake/system emails
+    if [[ "$email" == *"@anon.dynabridge.local" || "$email" == *"@example.com" || "$email" == *"@localhost" ]]; then
+      continue
+    fi
+
+    local anon_email=$(get_anon_email "$email")
+    if [ "$email" != "$anon_email" ]; then
+      # Use sed to replace (escape special chars)
+      local escaped_email=$(echo "$email" | sed 's/[.[\*^$()+?{|]/\\&/g')
+      new_content=$(echo "$new_content" | sed "s/$escaped_email/$anon_email/g")
+      modified=true
+    fi
+  done
+
+  # ==========================================================================
+  # REDACT IP ADDRESSES (complete removal/replacement)
+  # ==========================================================================
+  # IPv4 addresses (but preserve localhost 127.0.0.1 and 0.0.0.0)
+  # Match: xxx.xxx.xxx.xxx where each octet is 0-255
+  local ipv4_regex='([0-9]{1,3}\.){3}[0-9]{1,3}'
+
+  # Replace non-localhost IPv4 with [REDACTED]
+  new_content=$(echo "$new_content" | sed -E "
+    s/\b(127\.0\.0\.1|0\.0\.0\.0)\b/\1/g
+    s/\b(10\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3})\b/[IP-REDACTED]/g
+    s/\b(172\.(1[6-9]|2[0-9]|3[01])\.[0-9]{1,3}\.[0-9]{1,3})\b/[IP-REDACTED]/g
+    s/\b(192\.168\.[0-9]{1,3}\.[0-9]{1,3})\b/[IP-REDACTED]/g
+    s/\b([1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\b/[IP-REDACTED]/g
+  ")
+
+  # Check if content changed from IP redaction
+  if [ "$content" != "$new_content" ]; then
+    modified=true
+    content="$new_content"
+  fi
+
+  # IPv6 addresses (simplified pattern - catches most common formats)
+  new_content=$(echo "$new_content" | sed -E 's/\b([0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}\b/[IPv6-REDACTED]/g')
+  new_content=$(echo "$new_content" | sed -E 's/\b([0-9a-fA-F]{1,4}:){1,7}:\b/[IPv6-REDACTED]/g')
+  new_content=$(echo "$new_content" | sed -E 's/\b:([0-9a-fA-F]{1,4}:){1,7}\b/[IPv6-REDACTED]/g')
+  new_content=$(echo "$new_content" | sed -E 's/\b([0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}\b/[IPv6-REDACTED]/g')
+
+  if [ "$content" != "$new_content" ]; then
+    modified=true
+    content="$new_content"
+  fi
+
+  # ==========================================================================
+  # ANONYMIZE HOSTNAMES
+  # ==========================================================================
+  # This is trickier - we look for hostname patterns in specific contexts
+
+  # Pattern 1: host=hostname or host="hostname" or host='hostname'
+  local host_patterns=(
+    's/\bhost["\x27]?\s*[:=]\s*["\x27]?([a-zA-Z0-9][-a-zA-Z0-9.]*[a-zA-Z0-9])\b/host=HOST_PLACEHOLDER_\1/gi'
+    's/\bhostname["\x27]?\s*[:=]\s*["\x27]?([a-zA-Z0-9][-a-zA-Z0-9.]*[a-zA-Z0-9])\b/hostname=HOST_PLACEHOLDER_\1/gi'
+    's/\bsplunk_server["\x27]?\s*[:=]\s*["\x27]?([a-zA-Z0-9][-a-zA-Z0-9.]*[a-zA-Z0-9])\b/splunk_server=HOST_PLACEHOLDER_\1/gi'
+    's/\bserver["\x27]?\s*[:=]\s*["\x27]?([a-zA-Z0-9][-a-zA-Z0-9.]*[a-zA-Z0-9])\b/server=HOST_PLACEHOLDER_\1/gi'
+  )
+
+  # Extract hostnames from common fields in JSON/conf files
+  local hostnames=""
+
+  # JSON format: "host": "value" or "hostname": "value"
+  hostnames+=" $(echo "$content" | grep -oE '"(host|hostname|splunk_server|server|serverName)"\s*:\s*"[^"]+' 2>/dev/null | grep -oE '"[^"]+$' | tr -d '"' | sort -u || true)"
+
+  # Conf format: host = value
+  hostnames+=" $(echo "$content" | grep -oE '\b(host|hostname|splunk_server|server)\s*=\s*[^\s,\]]+' 2>/dev/null | sed 's/.*=\s*//' | sort -u || true)"
+
+  # XML format: <host>value</host>
+  hostnames+=" $(echo "$content" | grep -oE '<(host|hostname|server)>[^<]+<' 2>/dev/null | sed 's/<[^>]*>//g' | sort -u || true)"
+
+  for hostname in $hostnames; do
+    # Skip common safe values
+    if [[ -z "$hostname" || "$hostname" == "localhost" || "$hostname" == "127.0.0.1" || \
+          "$hostname" == "null" || "$hostname" == "none" || "$hostname" == "*" || \
+          "$hostname" == "host-"*".anon.local" ]]; then
+      continue
+    fi
+
+    # Skip if it looks like an already-redacted IP
+    if [[ "$hostname" == "[IP-REDACTED]" || "$hostname" == "[IPv6-REDACTED]" ]]; then
+      continue
+    fi
+
+    local anon_host=$(get_anon_hostname "$hostname")
+    if [ "$hostname" != "$anon_host" ]; then
+      # Escape special characters for sed
+      local escaped_host=$(echo "$hostname" | sed 's/[.[\*^$()+?{|]/\\&/g')
+      new_content=$(echo "$new_content" | sed "s/\b$escaped_host\b/$anon_host/g" 2>/dev/null || echo "$new_content")
+      modified=true
+    fi
+  done
+
+  # ==========================================================================
+  # ANONYMIZE WEBHOOK URLs
+  # ==========================================================================
+  # Match webhook URLs in JSON and conf formats
+  local webhook_urls=""
+
+  # JSON format: "action.webhook.param.url": "https://..." or "webhook_url": "https://..."
+  webhook_urls+=" $(echo "$new_content" | grep -oE '"(action\.webhook\.param\.url|webhook_url|url)"\s*:\s*"https?://[^"]+' 2>/dev/null | grep -oE 'https?://[^"]+' | sort -u || true)"
+
+  # Also catch generic webhook patterns
+  webhook_urls+=" $(echo "$new_content" | grep -oE 'https?://[a-zA-Z0-9.-]+\.(slack\.com|pagerduty\.com|opsgenie\.com|webhook\.office\.com|hooks\.zapier\.com|notify\.events|webhook\.site|pipedream\.net|requestbin\.com)[^"'\''[:space:]]*' 2>/dev/null | sort -u || true)"
+
+  for webhook_url in $webhook_urls; do
+    # Skip if empty or already anonymized
+    if [[ -z "$webhook_url" || "$webhook_url" == *"webhook.anon.dynabridge.local"* ]]; then
+      continue
+    fi
+
+    local anon_webhook=$(get_anon_webhook_url "$webhook_url")
+    if [ "$webhook_url" != "$anon_webhook" ]; then
+      # Escape special characters for sed (URLs have lots of special chars)
+      local escaped_webhook=$(echo "$webhook_url" | sed 's/[.[\*^$()+?{|\/&]/\\&/g')
+      new_content=$(echo "$new_content" | sed "s|$escaped_webhook|$anon_webhook|g" 2>/dev/null || echo "$new_content")
+      modified=true
+    fi
+  done
+
+  # ==========================================================================
+  # ANONYMIZE API KEYS AND TOKENS
+  # ==========================================================================
+  # PagerDuty integration keys (32 character hex strings)
+  local pagerduty_keys=""
+  pagerduty_keys+=" $(echo "$new_content" | grep -oE '"(action\.pagerduty\.integration_key|integration_key|pagerduty_key|routing_key)"\s*:\s*"[a-zA-Z0-9]{20,}' 2>/dev/null | grep -oE '[a-zA-Z0-9]{20,}' | sort -u || true)"
+  pagerduty_keys+=" $(echo "$new_content" | grep -oE '(integration_key|routing_key)\s*=\s*[a-zA-Z0-9]{20,}' 2>/dev/null | grep -oE '[a-zA-Z0-9]{20,}' | sort -u || true)"
+
+  for pd_key in $pagerduty_keys; do
+    if [[ -z "$pd_key" || "$pd_key" == "[PAGERDUTY-KEY-"*"]" ]]; then
+      continue
+    fi
+    local anon_key=$(get_anon_api_key "$pd_key" "PAGERDUTY")
+    if [ "$pd_key" != "$anon_key" ]; then
+      new_content=$(echo "$new_content" | sed "s/$pd_key/$anon_key/g" 2>/dev/null || echo "$new_content")
+      modified=true
+    fi
+  done
+
+  # Generic API tokens (Bearer tokens, API keys in headers)
+  local api_tokens=""
+  api_tokens+=" $(echo "$new_content" | grep -oE '"(api_key|apikey|api_token|apiToken|token|secret|auth_token|access_token|bearer)"\s*:\s*"[^"]{16,}' 2>/dev/null | grep -oE '"[^"]{16,}$' | tr -d '"' | sort -u || true)"
+  api_tokens+=" $(echo "$new_content" | grep -oE 'Bearer\s+[a-zA-Z0-9._-]{20,}' 2>/dev/null | sed 's/Bearer\s*//' | sort -u || true)"
+
+  for api_token in $api_tokens; do
+    if [[ -z "$api_token" || "$api_token" == "[API-KEY-"*"]" ]]; then
+      continue
+    fi
+    local anon_token=$(get_anon_api_key "$api_token" "API")
+    if [ "$api_token" != "$anon_token" ]; then
+      local escaped_token=$(echo "$api_token" | sed 's/[.[\*^$()+?{|\/&]/\\&/g')
+      new_content=$(echo "$new_content" | sed "s/$escaped_token/$anon_token/g" 2>/dev/null || echo "$new_content")
+      modified=true
+    fi
+  done
+
+  # ==========================================================================
+  # ANONYMIZE SLACK CHANNELS
+  # ==========================================================================
+  local slack_channels=""
+
+  # JSON format: "action.slack.channel": "#channel" or "channel": "#channel"
+  slack_channels+=" $(echo "$new_content" | grep -oE '"(action\.slack\.channel|slack_channel|channel)"\s*:\s*"#[^"]+' 2>/dev/null | grep -oE '#[^"]+' | sort -u || true)"
+
+  # Conf format: channel = #channel
+  slack_channels+=" $(echo "$new_content" | grep -oE '\bchannel\s*=\s*#[^\s,\]]+' 2>/dev/null | grep -oE '#[^\s,\]]+' | sort -u || true)"
+
+  for slack_channel in $slack_channels; do
+    if [[ -z "$slack_channel" || "$slack_channel" == "#anon-channel-"* ]]; then
+      continue
+    fi
+    local anon_channel=$(get_anon_slack_channel "$slack_channel")
+    if [ "$slack_channel" != "$anon_channel" ]; then
+      local escaped_channel=$(echo "$slack_channel" | sed 's/[.[\*^$()+?{|]/\\&/g')
+      new_content=$(echo "$new_content" | sed "s/$escaped_channel/$anon_channel/g" 2>/dev/null || echo "$new_content")
+      modified=true
+    fi
+  done
+
+  # ==========================================================================
+  # ANONYMIZE USERNAMES AND USER IDs
+  # ==========================================================================
+  local usernames=""
+
+  # JSON format: "owner": "username", "eai:acl.owner": "username", "user": "username"
+  usernames+=" $(echo "$new_content" | grep -oE '"(owner|eai:acl\.owner|author|user|username|realname|created_by|updated_by)"\s*:\s*"[^"]+' 2>/dev/null | grep -oE '"[^"]+$' | tr -d '"' | sort -u || true)"
+
+  # Conf format: owner = username
+  usernames+=" $(echo "$new_content" | grep -oE '\b(owner|author|user)\s*=\s*[^\s,\]"]+' 2>/dev/null | sed 's/.*=\s*//' | sort -u || true)"
+
+  for username in $usernames; do
+    # Skip if empty, already anonymized, or system user
+    if [[ -z "$username" || "$username" == "anon-user-"* || \
+          "$username" == "nobody" || "$username" == "admin" || "$username" == "system" || \
+          "$username" == "splunk-system-user" || "$username" == "root" || \
+          "$username" == "null" || "$username" == "none" ]]; then
+      continue
+    fi
+
+    local anon_user=$(get_anon_username "$username")
+    if [ "$username" != "$anon_user" ]; then
+      # Need word boundary matching to avoid partial replacements
+      local escaped_user=$(echo "$username" | sed 's/[.[\*^$()+?{|]/\\&/g')
+      new_content=$(echo "$new_content" | sed "s/\"$escaped_user\"/\"$anon_user\"/g" 2>/dev/null || echo "$new_content")
+      modified=true
+    fi
+  done
+
+  # ==========================================================================
+  # WRITE MODIFIED CONTENT
+  # ==========================================================================
+  if [ "$modified" = true ]; then
+    echo "$new_content" > "$temp_file"
+    mv "$temp_file" "$file"
+  fi
+}
+
+# Main anonymization function - processes all files in export directory
+anonymize_export() {
+  if [ "$ANONYMIZE_DATA" != true ]; then
+    return 0
+  fi
+
+  print_info_box "STEP 7.5: ANONYMIZING SENSITIVE DATA" \
+    "" \
+    "${WHITE}Replacing sensitive data with anonymized values:${NC}" \
+    "" \
+    "  ${CYAN}→${NC} Email addresses → user######@anon.dynabridge.local" \
+    "  ${CYAN}→${NC} Hostnames → host-########.anon.local" \
+    "  ${CYAN}→${NC} IP addresses → [IP-REDACTED]" \
+    "  ${CYAN}→${NC} Webhook URLs → https://webhook.anon.dynabridge.local/hook-###" \
+    "  ${CYAN}→${NC} API keys/tokens → [API-KEY-########]" \
+    "  ${CYAN}→${NC} PagerDuty keys → [PAGERDUTY-KEY-########]" \
+    "  ${CYAN}→${NC} Slack channels → #anon-channel-######" \
+    "  ${CYAN}→${NC} Usernames → anon-user-######" \
+    "" \
+    "${WHITE}NOTE:${NC} The same original value always maps to the same" \
+    "anonymized value, preserving data relationships."
+
+  echo ""
+  progress "Scanning export directory for files to anonymize..."
+
+  # Collect all text files to process (use helper function instead of find for container compatibility)
+  local files_to_process=()
+  while IFS= read -r file; do
+    [ -n "$file" ] && files_to_process+=("$file")
+  done < <(collect_files_recursive "$EXPORT_DIR" "json conf xml csv txt meta")
+
+  local total_files=${#files_to_process[@]}
+
+  if [ "$total_files" -eq 0 ]; then
+    info "No text files found to anonymize"
+    return 0
+  fi
+
+  progress "Found $total_files files to process..."
+
+  # Initialize progress bar
+  progress_init "Anonymizing sensitive data" "$total_files"
+
+  local processed=0
+  for file in "${files_to_process[@]}"; do
+    anonymize_file "$file"
+    ((processed++))
+    progress_update "$processed"
+  done
+
+  progress_complete
+
+  # Report statistics
+  echo ""
+  echo -e "${CYAN}┌─────────────────────────────────────────────────────────────────────┐${NC}"
+  echo -e "${CYAN}│${NC} ${WHITE}Anonymization Summary${NC}"
+  echo -e "${CYAN}├─────────────────────────────────────────────────────────────────────┤${NC}"
+  echo -e "${CYAN}│${NC}   Files processed:        ${GREEN}$total_files${NC}"
+  echo -e "${CYAN}│${NC}   Unique emails mapped:   ${GREEN}$ANON_EMAIL_COUNTER${NC}"
+  echo -e "${CYAN}│${NC}   Unique hosts mapped:    ${GREEN}$ANON_HOST_COUNTER${NC}"
+  echo -e "${CYAN}│${NC}   Unique webhooks mapped: ${GREEN}$ANON_WEBHOOK_COUNTER${NC}"
+  echo -e "${CYAN}│${NC}   API keys/tokens:        ${GREEN}$ANON_APIKEY_COUNTER${NC}"
+  echo -e "${CYAN}│${NC}   Slack channels:         ${GREEN}$ANON_SLACK_COUNTER${NC}"
+  echo -e "${CYAN}│${NC}   Usernames mapped:       ${GREEN}$ANON_USERNAME_COUNTER${NC}"
+  echo -e "${CYAN}│${NC}   IP addresses:           ${GREEN}Redacted (all)${NC}"
+  echo -e "${CYAN}└─────────────────────────────────────────────────────────────────────┘${NC}"
+
+  # Write anonymization mapping report (for reference, stored in export)
+  local anon_report="$EXPORT_DIR/_anonymization_report.json"
+  cat > "$anon_report" << ANON_EOF
+{
+  "anonymization_applied": true,
+  "timestamp": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
+  "statistics": {
+    "files_processed": $total_files,
+    "unique_emails_anonymized": $ANON_EMAIL_COUNTER,
+    "unique_hosts_anonymized": $ANON_HOST_COUNTER,
+    "unique_webhooks_anonymized": $ANON_WEBHOOK_COUNTER,
+    "unique_api_keys_anonymized": $ANON_APIKEY_COUNTER,
+    "unique_slack_channels_anonymized": $ANON_SLACK_COUNTER,
+    "unique_usernames_anonymized": $ANON_USERNAME_COUNTER,
+    "ip_addresses": "all_redacted"
+  },
+  "transformations": {
+    "emails": "original@domain.com → user######@anon.dynabridge.local",
+    "hostnames": "server.example.com → host-########.anon.local",
+    "ipv4": "x.x.x.x → [IP-REDACTED]",
+    "ipv6": "xxxx:xxxx:... → [IPv6-REDACTED]",
+    "webhook_urls": "https://hooks.slack.com/... → https://webhook.anon.dynabridge.local/hook-############",
+    "pagerduty_keys": "abc123def456... → [PAGERDUTY-KEY-########]",
+    "api_keys": "token_xyz... → [API-KEY-########]",
+    "slack_channels": "#alerts-prod → #anon-channel-######",
+    "usernames": "john.smith → anon-user-######"
+  },
+  "sensitive_fields_covered": [
+    "action.email.to",
+    "action.email.cc",
+    "action.email.bcc",
+    "action.webhook.param.url",
+    "action.pagerduty.integration_key",
+    "action.slack.channel",
+    "eai:acl.owner",
+    "owner",
+    "author",
+    "realname",
+    "user",
+    "username"
+  ],
+  "note": "This export has been anonymized for safe sharing. Original values cannot be recovered. The same input always produces the same anonymized output, preserving data relationships for analysis."
+}
+ANON_EOF
+
+  success "Data anonymization complete"
+  log "Anonymization: $ANON_EMAIL_COUNTER emails, $ANON_HOST_COUNTER hosts, $ANON_WEBHOOK_COUNTER webhooks, $ANON_APIKEY_COUNTER API keys, $ANON_SLACK_COUNTER Slack channels, $ANON_USERNAME_COUNTER usernames mapped"
+}
+
+# =============================================================================
+# CREATE ARCHIVE
+# =============================================================================
+
+create_archive() {
+  # All status messages go to stderr so only the tarball path goes to stdout
+  print_info_box "STEP 8: CREATING ARCHIVE" \
+    "" \
+    "${WHITE}Compressing all collected data into a single archive...${NC}" >&2
+
+  echo "" >&2
+  progress "Creating compressed archive..." >&2
+
+  local tarball="/tmp/${EXPORT_NAME}.tar.gz"
+
+  # Create the archive
+  tar -czf "$tarball" -C /tmp "$EXPORT_NAME" 2>/dev/null
+
+  if [ ! -f "$tarball" ]; then
+    error "Failed to create archive" >&2
+    exit 1
+  fi
+
+  # Get size
+  local size=$(du -h "$tarball" | cut -f1)
+
+  # Generate checksum
+  local checksum=""
+  if command_exists sha256sum; then
+    checksum=$(sha256sum "$tarball" | cut -d' ' -f1)
+  elif command_exists shasum; then
+    checksum=$(shasum -a 256 "$tarball" | cut -d' ' -f1)
+  fi
+
+  # Set permissions
+  chmod 600 "$tarball"
+
+  success "Archive created: $tarball" >&2
+  success "Size: $size" >&2
+
+  if [ -n "$checksum" ]; then
+    echo "$checksum  ${EXPORT_NAME}.tar.gz" > "${tarball}.sha256"
+    info "SHA256: $checksum" >&2
+  fi
+
+  # Cleanup export directory
+  rm -rf "$EXPORT_DIR"
+
+  echo "" >&2
+  # Only the tarball path goes to stdout (for capture)
+  echo "$tarball"
+}
+
+# =============================================================================
+# TROUBLESHOOTING REPORT GENERATOR
+# =============================================================================
+
+generate_troubleshooting_report() {
+  local report_file="$EXPORT_DIR/TROUBLESHOOTING.md"
+
+  cat > "$report_file" << 'TROUBLESHOOT_HEADER'
+# DynaBridge Export Troubleshooting Report
+
+This report was generated because errors occurred during the export.
+Use this information to diagnose and resolve issues.
+
+---
+
+TROUBLESHOOT_HEADER
+
+  # Add environment info
+  cat >> "$report_file" << EOF
+## Environment Information
+
+| Setting | Value |
+|---------|-------|
+| Script Version | $SCRIPT_VERSION |
+| Timestamp | $(date -Iseconds) |
+| Hostname | $(get_hostname) |
+| OS | $(uname -s) $(uname -r) |
+| Splunk Host | ${SPLUNK_HOST}:${SPLUNK_PORT} |
+| Splunk Home | ${SPLUNK_HOME:-Not set} |
+| Splunk Flavor | ${SPLUNK_FLAVOR:-Unknown} |
+| Splunk Role | ${SPLUNK_ROLE:-Unknown} |
+| Is Cloud | ${IS_CLOUD} |
+
+---
+
+## Error Summary
+
+**Total Errors:** ${STATS_ERRORS}
+
+EOF
+
+  # Scan for error files in _usage_analytics
+  if [ -d "$EXPORT_DIR/dynabridge_analytics/usage_analytics" ]; then
+    echo "## Failed Searches" >> "$report_file"
+    echo "" >> "$report_file"
+
+    local error_count=0
+    for json_file in "$EXPORT_DIR/dynabridge_analytics/usage_analytics"/*.json; do
+      if [ -f "$json_file" ] && grep -q '"error":' "$json_file" 2>/dev/null; then
+        ((error_count++))
+        local filename=$(basename "$json_file")
+        local error_type=$(grep -o '"error": *"[^"]*"' "$json_file" | head -1 | cut -d'"' -f4)
+        local error_msg=$(grep -o '"message": *"[^"]*"' "$json_file" | head -1 | cut -d'"' -f4)
+
+        cat >> "$report_file" << EOF
+### Error $error_count: $filename
+
+- **Error Type:** \`$error_type\`
+- **Message:** $error_msg
+
+EOF
+      fi
+    done
+
+    if [ "$error_count" -eq 0 ]; then
+      echo "_No search errors detected in output files._" >> "$report_file"
+      echo "" >> "$report_file"
+    fi
+  fi
+
+  # Add common troubleshooting guides
+  cat >> "$report_file" << 'TROUBLESHOOT_GUIDES'
+---
+
+## Common Issues and Solutions
+
+### 1. Network/Connection Errors (HTTP 000)
+
+**Symptoms:** "Could not connect to Splunk REST API"
+
+**Causes & Solutions:**
+- **Splunk not running:** Run `$SPLUNK_HOME/bin/splunk status`
+- **Wrong port:** Default is 8089. Check with `netstat -tlnp | grep splunk`
+- **Firewall blocking:** Check `iptables -L` or firewall rules
+- **SSL issues:** The script uses `-k` flag but some proxies may interfere
+
+**Diagnostic command:**
+```bash
+curl -k -u admin:password https://localhost:8089/services/server/info
+```
+
+---
+
+### 2. Authentication Errors (HTTP 401)
+
+**Symptoms:** "Authentication failed"
+
+**Causes & Solutions:**
+- **Wrong password:** Verify credentials work in Splunk Web
+- **Account locked:** Check for lockout in `$SPLUNK_HOME/var/log/splunk/splunkd.log`
+- **Token expired:** If using API tokens, generate a new one
+
+**Diagnostic command:**
+```bash
+curl -k -u YOUR_USER:YOUR_PASSWORD https://localhost:8089/services/authentication/current-context
+```
+
+---
+
+### 3. Permission Errors (HTTP 403)
+
+**Symptoms:** "User lacks required capabilities"
+
+**Causes & Solutions:**
+- **Missing role capabilities:** User needs these capabilities:
+  - `search` - Run searches
+  - `schedule_search` - Access search job API
+  - `list_settings` - Read configurations
+  - `rest_properties_get` - REST API access
+
+**To add capabilities:**
+1. Go to Settings → Access controls → Roles
+2. Edit the user's role
+3. Add required capabilities
+
+---
+
+### 4. Search Timeouts
+
+**Symptoms:** "Search timed out after X seconds"
+
+**Causes & Solutions:**
+- **Large data volume:** Searches over _audit and _internal can be slow
+- **Resource constraints:** Check Splunk scheduler load
+- **Network latency:** If Splunk is remote, increase timeout
+
+**Workaround:** Run the failing search manually in Splunk and export results
+
+---
+
+### 5. REST Command Blocked (Splunk Cloud)
+
+**Symptoms:** "REST API endpoint not found" or searches using `| rest` fail
+
+**Causes & Solutions:**
+- **Splunk Cloud restriction:** The `| rest` command may be disabled
+- Use the **Cloud export script** instead: `dynabridge-splunk-cloud-export.sh`
+- Contact Splunk Cloud support to enable REST API access
+
+---
+
+### 6. _audit or _internal Index Empty
+
+**Symptoms:** Usage analytics files have zero results
+
+**Causes & Solutions:**
+- **Audit logging disabled:** Check `audit.conf`
+- **Retention expired:** Check `indexes.conf` for index retention
+- **Different index names:** Some deployments rename internal indexes
+
+**Diagnostic command:**
+```bash
+# Check if _audit has data
+$SPLUNK_HOME/bin/splunk search "index=_audit | head 1" -auth admin:password
+```
+
+---
+
+## Getting Help
+
+If you continue to have issues:
+
+1. **Collect these files:**
+   - This TROUBLESHOOTING.md
+   - export.log
+   - $SPLUNK_HOME/var/log/splunk/splunkd.log (last 500 lines)
+
+2. **Contact DynaBridge support** with the above files
+
+3. **Useful commands to run:**
+   ```bash
+   # Splunk version and health
+   $SPLUNK_HOME/bin/splunk version
+   $SPLUNK_HOME/bin/splunk status
+
+   # Check REST API is accessible
+   curl -k -u admin:password https://localhost:8089/services/server/info?output_mode=json
+
+   # Check user capabilities
+   curl -k -u YOUR_USER:YOUR_PASSWORD https://localhost:8089/services/authentication/current-context?output_mode=json
+   ```
+
+---
+
+*Report generated by DynaBridge Splunk Export v${SCRIPT_VERSION}*
+TROUBLESHOOT_GUIDES
+
+  log "Generated troubleshooting report: $report_file"
+}
+
+# =============================================================================
+# COMPLETION
+# =============================================================================
+
+show_completion() {
+  local tarball="$1"
+
+  # Calculate total elapsed time
+  EXPORT_END_TIME=$(date +%s)
+  local total_elapsed=$((EXPORT_END_TIME - EXPORT_START_TIME))
+  local elapsed_str=""
+
+  if [ "$total_elapsed" -lt 60 ]; then
+    elapsed_str="${total_elapsed} seconds"
+  elif [ "$total_elapsed" -lt 3600 ]; then
+    elapsed_str="$((total_elapsed / 60))m $((total_elapsed % 60))s"
+  else
+    elapsed_str="$((total_elapsed / 3600))h $(((total_elapsed % 3600) / 60))m"
+  fi
+
+  echo ""
+  echo -e "${GREEN}"
+  cat << 'EOF'
+  ╔═══════════════════════════════════════════════════════════════════════╗
+  ║                                                                       ║
+  ║                    EXPORT COMPLETED SUCCESSFULLY!                     ║
+  ║                                                                       ║
+  ╚═══════════════════════════════════════════════════════════════════════╝
+EOF
+  echo -e "${NC}"
+
+  echo -e "  ${WHITE}Export File:${NC} $tarball"
+  echo -e "  ${WHITE}Size:${NC}        $(du -h "$tarball" | cut -f1)"
+  echo -e "  ${WHITE}Duration:${NC}    ${elapsed_str}"
+  echo ""
+
+  print_box_header "EXPORT STATISTICS"
+  print_box_line ""
+  print_box_line "  Applications:    ${STATS_APPS}"
+  print_box_line "  Dashboards:      ${STATS_DASHBOARDS}"
+  print_box_line "  Alerts:          ${STATS_ALERTS}"
+  print_box_line "  Users:           ${STATS_USERS}"
+  print_box_line "  Indexes:         ${STATS_INDEXES}"
+  print_box_line ""
+  print_box_line "  ${CYAN}Total Time:      ${elapsed_str}${NC}"
+  print_box_line ""
+  if [ "$STATS_ERRORS" -gt 0 ]; then
+    print_box_line "  ${YELLOW}Warnings/Errors: ${STATS_ERRORS}${NC}"
+    print_box_line "  ${YELLOW}See: TROUBLESHOOTING.md in archive${NC}"
+  fi
+  print_box_footer
+
+  # Show error warning prominently if there were errors
+  if [ "$STATS_ERRORS" -gt 0 ]; then
+    echo ""
+    echo -e "${YELLOW}╔══════════════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${YELLOW}║${NC}  ${WHITE}⚠  EXPORT COMPLETED WITH ERRORS${NC}                                     ${YELLOW}║${NC}"
+    echo -e "${YELLOW}╠══════════════════════════════════════════════════════════════════════╣${NC}"
+    echo -e "${YELLOW}║${NC}                                                                      ${YELLOW}║${NC}"
+    echo -e "${YELLOW}║${NC}  ${STATS_ERRORS} error(s) occurred during the export. The export file is      ${YELLOW}║${NC}"
+    echo -e "${YELLOW}║${NC}  still usable, but some data may be missing.                        ${YELLOW}║${NC}"
+    echo -e "${YELLOW}║${NC}                                                                      ${YELLOW}║${NC}"
+    echo -e "${YELLOW}║${NC}  ${WHITE}TO DIAGNOSE:${NC}                                                       ${YELLOW}║${NC}"
+    echo -e "${YELLOW}║${NC}  1. Extract: tar -xzf $(basename "$tarball")                ${YELLOW}║${NC}"
+    echo -e "${YELLOW}║${NC}  2. Read: TROUBLESHOOTING.md                                        ${YELLOW}║${NC}"
+    echo -e "${YELLOW}║${NC}  3. Check: export.log for detailed error messages                   ${YELLOW}║${NC}"
+    echo -e "${YELLOW}║${NC}                                                                      ${YELLOW}║${NC}"
+    echo -e "${YELLOW}║${NC}  ${WHITE}COMMON FIXES:${NC}                                                      ${YELLOW}║${NC}"
+    echo -e "${YELLOW}║${NC}  • Verify user has 'search' and 'admin' capabilities               ${YELLOW}║${NC}"
+    echo -e "${YELLOW}║${NC}  • Check _audit and _internal indexes have data                    ${YELLOW}║${NC}"
+    echo -e "${YELLOW}║${NC}  • For Splunk Cloud, some REST commands may be blocked             ${YELLOW}║${NC}"
+    echo -e "${YELLOW}║${NC}                                                                      ${YELLOW}║${NC}"
+    echo -e "${YELLOW}╚══════════════════════════════════════════════════════════════════════╝${NC}"
+  fi
+
+  echo ""
+  echo -e "${WHITE}NEXT STEPS:${NC}"
+  echo ""
+  echo "  1. Download the export file from this server:"
+  echo -e "     ${CYAN}$tarball${NC}"
+  echo ""
+  echo "  2. Open DynaBridge for Splunk in Dynatrace"
+  echo ""
+  echo "  3. Navigate to: Migration Workspace → Project Initialization"
+  echo ""
+  echo "  4. Drag and drop the .tar.gz file into the upload area"
+  echo ""
+  echo "  5. DynaBridge will analyze your environment and show:"
+  echo "     • Migration readiness assessment"
+  echo "     • Dashboard conversion preview"
+  echo "     • Alert conversion checklist"
+  echo "     • Data pipeline requirements"
+  echo ""
+
+  print_line "─" 75
+
+  echo ""
+  echo -e "${GREEN}Thank you for using DynaBridge!${NC}"
+  echo ""
+}
+
+# =============================================================================
+# MAIN EXECUTION
+# =============================================================================
+
+main() {
+  # Parse command line arguments for non-interactive mode
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -u|--user|--username)
+        SPLUNK_USER="$2"
+        shift 2
+        ;;
+      -p|--pass|--password)
+        SPLUNK_PASSWORD="$2"
+        shift 2
+        ;;
+      -h|--host)
+        SPLUNK_HOST="$2"
+        shift 2
+        ;;
+      -P|--port)
+        SPLUNK_PORT="$2"
+        shift 2
+        ;;
+      --splunk-home)
+        SPLUNK_HOME="$2"
+        shift 2
+        ;;
+      --anonymize)
+        ANONYMIZE_DATA=true
+        shift
+        ;;
+      --no-anonymize)
+        ANONYMIZE_DATA=false
+        shift
+        ;;
+      --yes|-y)
+        AUTO_CONFIRM=true
+        shift
+        ;;
+      --help)
+        echo "Usage: $0 [OPTIONS]"
+        echo ""
+        echo "Options:"
+        echo "  -u, --username USER     Splunk admin username"
+        echo "  -p, --password PASS     Splunk admin password"
+        echo "  -h, --host HOST         Splunk host (default: localhost)"
+        echo "  -P, --port PORT         Splunk port (default: 8089)"
+        echo "  --splunk-home PATH      Splunk installation path"
+        echo "  --anonymize             Enable data anonymization (default)"
+        echo "  --no-anonymize          Disable data anonymization"
+        echo "  -y, --yes               Auto-confirm all prompts"
+        echo "  --help                  Show this help message"
+        exit 0
+        ;;
+      *)
+        shift
+        ;;
+    esac
+  done
+
+  # Fall back to environment variables if CLI args not provided
+  # This is useful for container environments where credentials are in env vars
+  if [ -z "$SPLUNK_USER" ] && [ -n "$SPLUNK_ADMIN_USER" ]; then
+    SPLUNK_USER="$SPLUNK_ADMIN_USER"
+  fi
+  # Note: SPLUNK_PASSWORD is already a script variable, so we need to check
+  # if it was set via CLI. If not, check environment variables.
+  if [ -z "$SPLUNK_PASSWORD" ]; then
+    # Check common env var names for Splunk password
+    # Try SPLUNK_ADMIN_PASSWORD first (to avoid name collision with script var)
+    if [ -n "$SPLUNK_ADMIN_PASSWORD" ]; then
+      SPLUNK_PASSWORD="$SPLUNK_ADMIN_PASSWORD"
+    fi
+  fi
+
+  # Start overall timer
+  EXPORT_START_TIME=$(date +%s)
+
+  # Show welcome
+  show_banner
+  show_welcome
+
+  # Check prerequisites
+  check_prerequisites
+
+  # Detect environment
+  detect_splunk_home
+  detect_splunk_flavor
+
+  # Select what to export
+  if [ "$SPLUNK_FLAVOR" != "uf" ]; then
+    select_applications
+    select_data_categories
+    authenticate_splunk
+    select_usage_period
+  fi
+
+  # Prepare export
+  create_export_directory
+
+  # Collect data
+  print_box_header "COLLECTING DATA"
+  print_box_line ""
+  print_box_line "This may take several minutes depending on your environment size."
+  print_box_line ""
+  print_box_footer
+  echo ""
+
+  # Show scale warning if large environment
+  local total_apps=${#SELECTED_APPS[@]}
+  show_scale_warning "applications" "$total_apps" 50
+
+  collect_system_info
+
+  if [ "$COLLECT_CONFIGS" = true ]; then
+    # Initialize progress for app collection (same style as Dashboard Studio export)
+    progress_init "Exporting Application Configurations" "$total_apps"
+
+    local app_index=0
+    local histogram_data=()
+
+    for app in "${SELECTED_APPS[@]}"; do
+      ((app_index++))
+
+      # Collect app configs (the actual work)
+      collect_app_configs "$app"
+
+      # Collect data for histogram (dashboards per app) - use ls instead of find for container compatibility
+      local app_dash_count=0
+      for dash_dir in "default/data/ui/views" "local/data/ui/views"; do
+        if [ -d "$EXPORT_DIR/$app/$dash_dir" ]; then
+          local count=$(ls -1 "$EXPORT_DIR/$app/$dash_dir/"*.xml 2>/dev/null | wc -l | tr -d ' ')
+          app_dash_count=$((app_dash_count + count))
+        fi
+      done
+      if [ "$app_dash_count" -gt 0 ]; then
+        histogram_data+=("$app:$app_dash_count")
+      fi
+
+      # Update progress (single line, updates in place like Dashboard Studio)
+      progress_update "$app_index"
+    done
+
+    progress_complete
+
+    # Show histogram of dashboards by app (top 15)
+    if [ ${#histogram_data[@]} -gt 0 ]; then
+      # Sort by count (descending) and take top 15
+      local sorted_data=()
+      while IFS= read -r line; do
+        sorted_data+=("$line")
+      done < <(printf '%s\n' "${histogram_data[@]}" | sort -t':' -k2 -nr | head -15)
+
+      if [ ${#sorted_data[@]} -gt 0 ]; then
+        show_histogram "Dashboards by Application (Top 15)" "${sorted_data[@]}"
+      fi
+    fi
+  fi
+
+  if [ "$SPLUNK_FLAVOR" != "uf" ]; then
+    collect_dashboard_studio
+    collect_rbac
+    collect_usage_analytics
+  fi
+
+  collect_index_stats
+  collect_audit_sample
+
+  # Generate summary and manifest
+  generate_summary
+  generate_manifest
+
+  # Generate troubleshooting report if there were errors
+  if [ "$STATS_ERRORS" -gt 0 ]; then
+    warning "Export encountered ${STATS_ERRORS} error(s). Generating troubleshooting report..."
+    generate_troubleshooting_report
+  fi
+
+  # Anonymize data if requested (before creating archive)
+  anonymize_export
+
+  # Create archive
+  local tarball
+  tarball=$(create_archive)
+
+  # Show completion
+  show_completion "$tarball"
+}
+
+# Run main
+main "$@"
