@@ -4,512 +4,240 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>DynaBridge Splunk Cloud Export - Specification | DynaBridge for Splunk</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
     <style>
         :root {
-            /* Dynatrace Brand Colors - from dynatrace.com */
-            --dt-hero-blue: #1456ff;
-            --dt-nav-dark: #191919;
-            --dt-background-dark: #1a1a2e;
-            --dt-background-card: #252536;
-
-            /* Logo Colors - from actual Dynatrace logo */
-            --dt-logo-green: #73be28;
-            --dt-logo-cyan: #00bcd4;
-            --dt-logo-purple: #9c6ade;
-            --dt-logo-green-dark: #4a8c1c;
-
-            /* Content Background - clean white like dynatrace.com */
-            --dt-content-bg: #ffffff;
-            --dt-content-card: #ffffff;
-
-            /* Text Colors - dark on white like dynatrace.com */
-            --dt-text-dark: #191919;
-            --dt-text-body: #454545;
-            --dt-text-muted: #6c757d;
-            --dt-text-light: #ffffff;
-
-            /* Dynatrace Accent Colors */
-            --dt-blue: #1456ff;
-            --dt-blue-hover: #0d47d9;
-
-            /* Status Colors */
-            --dt-success: #73be28;
-            --dt-warning: #f5a623;
-            --dt-critical: #dc3545;
-
-            /* Splunk Green (for bridge branding) */
-            --splunk-green: #65a637;
-
-            /* Borders */
-            --dt-border-light: #e5e5e5;
-            --dt-border-dark: #323248;
+            --db-header-bg: #14172b;
+            --db-nav-dark: #1a1d2e;
+            --db-accent-purple: #7c5dc7;
+            --db-accent-blue: #4da6e8;
+            --db-accent-green: #6abf4b;
+            --content-bg: #ffffff;
+            --content-card: #f8f9fa;
+            --text-dark: #1a1a2e;
+            --text-body: #3a3a4a;
+            --text-muted: #6c757d;
+            --text-light: #ffffff;
+            --accent-blue: #1456ff;
+            --success: #6abf4b;
+            --border-light: #e0e0e0;
         }
 
-        * {
-            box-sizing: border-box;
-            margin: 0;
-            padding: 0;
-        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
 
         body {
-            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            line-height: 1.6;
-            color: var(--dt-text-dark);
-            background: var(--dt-content-bg);
-            font-size: 16px;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;
+            line-height: 1.45;
+            color: var(--text-dark);
+            background: var(--content-bg);
+            font-size: 14px;
         }
 
-        /* Header Banner - Solid Dynatrace Blue like dynatrace.com hero */
+        /* Header - Compact */
         .header-banner {
-            background: var(--dt-hero-blue);
-            padding: 60px 20px;
+            background: var(--db-header-bg);
+            padding: 20px 16px;
             text-align: center;
-            position: relative;
         }
-
-        .header-content {
-            position: relative;
-            z-index: 1;
-            max-width: 1000px;
-            margin: 0 auto;
-        }
-
+        .header-content { max-width: 900px; margin: 0 auto; }
         .logo-container {
             display: flex;
             align-items: center;
             justify-content: center;
             gap: 12px;
-            margin-bottom: 16px;
+            margin-bottom: 8px;
         }
-
-        /* DynaBridge logo image */
-        .logo-image {
-            height: 54px;
-            width: auto;
-        }
-
-        .logo-text {
-            font-size: 2.5em;
-            font-weight: 800;
-            letter-spacing: -0.03em;
-        }
-
-        .logo-text .dyna {
-            color: var(--dt-text-light);
-        }
-
-        .logo-text .bridge {
-            color: rgba(255, 255, 255, 0.9);
-        }
-
+        .logo-image { height: 36px; width: 36px; object-fit: contain; }
+        .logo-text { font-size: 1.5em; font-weight: 700; color: var(--text-light); }
+        .logo-text .highlight { color: var(--db-accent-purple); }
         .header-tagline {
-            color: rgba(255, 255, 255, 0.9);
-            font-size: 1.1em;
-            font-weight: 400;
-            margin-top: 8px;
+            color: rgba(255,255,255,0.6);
+            font-size: 0.85em;
+            margin-bottom: 10px;
         }
-
-        .header-tagline .highlight {
-            color: #ffffff;
-            font-weight: 400;
-        }
-
         .version-badge {
             display: inline-flex;
             align-items: center;
-            gap: 8px;
-            background: rgba(255, 255, 255, 0.15);
-            border: 1px solid rgba(255, 255, 255, 0.25);
-            padding: 8px 20px;
-            border-radius: 50px;
-            font-size: 0.85em;
-            color: var(--dt-text-light);
-            margin-top: 24px;
-            backdrop-filter: blur(10px);
+            gap: 6px;
+            background: rgba(255,255,255,0.08);
+            border: 1px solid rgba(255,255,255,0.15);
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 0.75em;
+            color: rgba(255,255,255,0.7);
         }
+        .version-badge .dot { width: 5px; height: 5px; background: var(--success); border-radius: 50%; }
+        .doc-title { margin-top: 12px; padding-top: 10px; border-top: 1px solid rgba(255,255,255,0.1); }
+        .doc-title h2 { color: var(--text-light); font-size: 1.1em; font-weight: 600; margin: 0; padding: 0; border: none; }
 
-        .version-badge .dot {
-            width: 8px;
-            height: 8px;
-            background: var(--dt-success);
-            border-radius: 50%;
-        }
-
-        .doc-title {
-            margin-top: 32px;
-            padding-top: 24px;
-            border-top: 1px solid rgba(255, 255, 255, 0.2);
-        }
-
-        .doc-title h2 {
-            color: var(--dt-text-light);
-            font-size: 1.5em;
-            font-weight: 700;
-            margin: 0;
-            padding: 0;
-            border: none;
-            letter-spacing: -0.01em;
-        }
-
-        /* Navigation - Dark Dynatrace Style */
+        /* Navigation - Compact */
         .doc-nav {
-            background: var(--dt-nav-dark);
-            border-bottom: none;
-            padding: 0;
+            background: var(--db-nav-dark);
             position: sticky;
             top: 0;
             z-index: 100;
+            border-bottom: 1px solid rgba(255,255,255,0.05);
         }
-
-        .doc-nav-inner {
-            max-width: 1200px;
-            margin: 0 auto;
-            display: flex;
-            gap: 0;
-            flex-wrap: wrap;
-            justify-content: center;
-        }
-
+        .doc-nav-inner { max-width: 1100px; margin: 0 auto; display: flex; flex-wrap: wrap; justify-content: center; }
         .doc-nav a {
-            color: rgba(255, 255, 255, 0.7);
+            color: rgba(255,255,255,0.55);
             text-decoration: none;
-            font-size: 0.9em;
+            font-size: 0.78em;
             font-weight: 500;
-            padding: 16px 20px;
+            padding: 10px 14px;
             border-bottom: 2px solid transparent;
-            transition: all 0.2s ease;
+            transition: all 0.15s;
         }
+        .doc-nav a:hover { color: var(--text-light); background: rgba(255,255,255,0.05); border-bottom-color: var(--db-accent-purple); }
 
-        .doc-nav a:hover {
-            color: var(--dt-text-light);
-            background: rgba(255, 255, 255, 0.1);
-            border-bottom-color: var(--dt-blue);
-        }
+        /* Content - Tight */
+        .content { max-width: 900px; margin: 0 auto; padding: 20px 24px 30px; }
 
-        .doc-nav a.active {
-            color: var(--dt-blue);
-            border-bottom-color: var(--dt-blue);
-        }
-
-        /* Content Area - Light Background */
-        .content {
-            max-width: 900px;
-            margin: 0 auto;
-            padding: 48px 24px;
-            background: var(--dt-content-bg);
-        }
-
-        /* Typography - Dark text on white background like dynatrace.com */
+        /* Typography - Compact */
         h1 {
-            color: var(--dt-text-dark);
-            font-size: 2.25em;
-            font-weight: 800;
-            margin-bottom: 16px;
-            letter-spacing: -0.02em;
-        }
-
-        h1::after {
-            content: '';
-            display: block;
-            width: 60px;
-            height: 4px;
-            background: var(--dt-blue);
-            border-radius: 2px;
-            margin-top: 16px;
-        }
-
-        h2 {
-            color: var(--dt-text-dark);
-            font-size: 1.5em;
+            color: var(--text-dark);
+            font-size: 1.6em;
             font-weight: 700;
-            margin-top: 48px;
-            margin-bottom: 16px;
-            padding-bottom: 12px;
-            border-bottom: 2px solid var(--dt-border-light);
-            letter-spacing: -0.01em;
+            margin-bottom: 4px;
+            padding-bottom: 8px;
+            border-bottom: 2px solid var(--db-accent-purple);
         }
-
-        h3 {
-            color: var(--dt-text-dark);
-            font-size: 1.2em;
+        h2 {
+            color: var(--text-dark);
+            font-size: 1.25em;
             font-weight: 600;
-            margin-top: 32px;
-            margin-bottom: 12px;
+            margin-top: 20px;
+            margin-bottom: 6px;
+            padding-bottom: 4px;
+            border-bottom: 1px solid var(--border-light);
         }
-
-        h4 {
-            color: var(--dt-text-dark);
+        h3 {
+            color: var(--text-dark);
             font-size: 1.05em;
             font-weight: 600;
-            margin-top: 24px;
-            margin-bottom: 10px;
+            margin-top: 14px;
+            margin-bottom: 4px;
         }
-
-        p {
-            margin-bottom: 16px;
-            color: var(--dt-text-body);
-        }
-
-        strong {
-            color: var(--dt-text-dark);
+        h4 {
+            color: var(--text-dark);
+            font-size: 0.95em;
             font-weight: 600;
+            margin-top: 10px;
+            margin-bottom: 3px;
         }
-
-        a {
-            color: var(--dt-blue);
-            text-decoration: none;
-            transition: color 0.2s;
+        h5, h6 {
+            color: var(--text-dark);
+            font-size: 0.9em;
+            font-weight: 600;
+            margin-top: 8px;
+            margin-bottom: 2px;
         }
+        p { margin-bottom: 8px; color: var(--text-body); }
+        strong { color: var(--text-dark); font-weight: 600; }
+        a { color: var(--accent-blue); text-decoration: none; }
+        a:hover { text-decoration: underline; }
 
-        a:hover {
-            color: var(--dt-blue-hover);
-            text-decoration: underline;
-        }
-
-        /* Code blocks - Dark IDE style */
+        /* Code - Compact */
         pre {
-            background: var(--dt-background-dark);
-            border: 1px solid var(--dt-border-dark);
-            border-radius: 8px;
-            padding: 20px 24px;
-            overflow-x: auto;
-            margin: 20px 0;
-            font-family: 'JetBrains Mono', 'Fira Code', 'Monaco', monospace;
-            font-size: 0.9em;
-            line-height: 1.6;
-            color: #e0e0e0;
-        }
-
-        code {
-            background: #f4f4f4;
-            color: var(--dt-text-dark);
-            padding: 3px 8px;
+            background: #1e1e2e;
+            border: 1px solid #2d2d3d;
             border-radius: 4px;
-            font-family: 'JetBrains Mono', 'Fira Code', 'Monaco', monospace;
-            font-size: 0.9em;
-        }
-
-        pre code {
-            background: none;
-            padding: 0;
+            padding: 10px 12px;
+            overflow-x: auto;
+            margin: 8px 0;
+            font-family: 'SF Mono', Monaco, Consolas, monospace;
+            font-size: 0.82em;
+            line-height: 1.4;
             color: #e0e0e0;
         }
+        code {
+            background: #f0f0f2;
+            color: #c7254e;
+            padding: 1px 4px;
+            border-radius: 3px;
+            font-family: 'SF Mono', Monaco, Consolas, monospace;
+            font-size: 0.85em;
+        }
+        pre code { background: none; padding: 0; color: #e0e0e0; }
 
-        /* Tables - Clean Light Style */
+        /* Tables - Compact */
         table {
             width: 100%;
-            border-collapse: separate;
-            border-spacing: 0;
-            margin: 24px 0;
-            font-size: 0.95em;
-            border-radius: 8px;
-            overflow: hidden;
-            border: 1px solid var(--dt-border-light);
-            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+            border-collapse: collapse;
+            margin: 10px 0;
+            font-size: 0.88em;
+            border: 1px solid var(--border-light);
         }
-
         th {
-            background: var(--dt-nav-dark);
-            color: var(--dt-text-light);
-            padding: 14px 16px;
+            background: var(--db-nav-dark);
+            color: var(--text-light);
+            padding: 8px 10px;
             text-align: left;
             font-weight: 600;
-            font-size: 0.85em;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-        }
-
-        td {
-            padding: 14px 16px;
-            border-bottom: 1px solid var(--dt-border-light);
-            color: var(--dt-text-body);
-            background: var(--dt-content-card);
-        }
-
-        tr:last-child td {
-            border-bottom: none;
-        }
-
-        tr:hover td {
-            background: #f0f4ff;
-        }
-
-        /* Lists */
-        ul, ol {
-            margin: 16px 0;
-            padding-left: 24px;
-            color: var(--dt-text-body);
-        }
-
-        li {
-            margin-bottom: 8px;
-        }
-
-        li::marker {
-            color: var(--dt-blue);
-        }
-
-        /* Blockquotes - Info card style */
-        blockquote {
-            background: #f8f9fa;
-            border-left: 4px solid var(--dt-blue);
-            border-radius: 0 8px 8px 0;
-            padding: 16px 20px;
-            margin: 24px 0;
-            color: var(--dt-text-dark);
-        }
-
-        blockquote p {
-            margin-bottom: 0;
-            color: var(--dt-text-body);
-        }
-
-        /* Horizontal rule */
-        hr {
-            border: none;
-            border-top: 2px solid var(--dt-border-light);
-            margin: 48px 0;
-        }
-
-        /* Status emoji handling */
-        .content p, .content td, .content li {
-            font-variant-emoji: emoji;
-        }
-
-        /* Footer - Dark Dynatrace Style */
-        .footer {
-            background: var(--dt-nav-dark);
-            border-top: none;
-            padding: 48px 24px;
-            text-align: center;
-        }
-
-        .footer-content {
-            max-width: 600px;
-            margin: 0 auto;
-        }
-
-        .footer-logo {
-            font-size: 1.5em;
-            font-weight: 800;
-            margin-bottom: 16px;
-        }
-
-        .footer-logo .dyna {
-            color: var(--dt-blue);
-        }
-
-        .footer-logo .bridge {
-            color: var(--dt-text-light);
-        }
-
-        .footer p {
-            color: rgba(255, 255, 255, 0.7);
-            font-size: 0.9em;
-            margin-bottom: 8px;
-        }
-
-        .footer-links {
-            display: flex;
-            justify-content: center;
-            gap: 24px;
-            margin-top: 24px;
-            flex-wrap: wrap;
-        }
-
-        .footer-links a {
-            color: rgba(255, 255, 255, 0.6);
-            font-size: 0.85em;
-            transition: color 0.2s;
-        }
-
-        .footer-links a:hover {
-            color: var(--dt-blue);
-        }
-
-        .footer-copyright {
-            margin-top: 32px;
-            padding-top: 24px;
-            border-top: 1px solid rgba(255, 255, 255, 0.1);
             font-size: 0.8em;
-            color: rgba(255, 255, 255, 0.5);
+            text-transform: uppercase;
+            letter-spacing: 0.02em;
+        }
+        td {
+            padding: 7px 10px;
+            border-bottom: 1px solid var(--border-light);
+            color: var(--text-body);
+        }
+        tr:last-child td { border-bottom: none; }
+        tr:nth-child(even) td { background: #f9f9fb; }
+
+        /* Lists - Tight */
+        ul, ol { margin: 6px 0; padding-left: 20px; color: var(--text-body); }
+        li { margin-bottom: 2px; }
+        li::marker { color: var(--db-accent-purple); }
+
+        /* Blockquotes */
+        blockquote {
+            background: var(--content-card);
+            border-left: 3px solid var(--db-accent-purple);
+            border-radius: 0 4px 4px 0;
+            padding: 8px 12px;
+            margin: 10px 0;
+        }
+        blockquote p { margin-bottom: 0; }
+
+        /* HR - Minimal */
+        hr { border: none; border-top: 1px solid var(--border-light); margin: 16px 0; }
+
+        /* Footer - Compact */
+        .footer { background: var(--db-nav-dark); padding: 20px 16px; text-align: center; }
+        .footer-content { max-width: 600px; margin: 0 auto; }
+        .footer-logo { font-size: 1em; font-weight: 700; color: var(--text-light); margin-bottom: 6px; }
+        .footer-logo .highlight { color: var(--db-accent-purple); }
+        .footer p { color: rgba(255,255,255,0.5); font-size: 0.8em; margin-bottom: 4px; }
+        .footer-links { display: flex; justify-content: center; gap: 16px; margin-top: 10px; flex-wrap: wrap; }
+        .footer-links a { color: rgba(255,255,255,0.45); font-size: 0.75em; }
+        .footer-links a:hover { color: var(--db-accent-purple); text-decoration: none; }
+        .footer-copyright {
+            margin-top: 12px;
+            padding-top: 10px;
+            border-top: 1px solid rgba(255,255,255,0.08);
+            font-size: 0.7em;
+            color: rgba(255,255,255,0.35);
         }
 
-        /* Print styles */
+        /* Print */
         @media print {
-            body {
-                background: #fff;
-                color: #333;
-            }
-            .header-banner {
-                background: #1456ff !important;
-                -webkit-print-color-adjust: exact;
-            }
-            .doc-nav {
-                display: none;
-            }
-            .content {
-                max-width: 100%;
-            }
-            .footer {
-                background: #191919;
-                -webkit-print-color-adjust: exact;
-            }
+            .doc-nav, .footer { display: none; }
+            .content { max-width: 100%; padding: 12px; }
+            .header-banner { padding: 12px; }
         }
 
         /* Responsive */
         @media (max-width: 768px) {
-            .header-banner {
-                padding: 40px 16px;
-            }
-            .logo-text {
-                font-size: 1.8em;
-            }
-            .logo-image {
-                height: 40px;
-                width: auto;
-            }
-            .content {
-                padding: 32px 16px;
-            }
-            h1 {
-                font-size: 1.75em;
-            }
-            h2 {
-                font-size: 1.3em;
-            }
-            table {
-                font-size: 0.85em;
-            }
-            th, td {
-                padding: 10px 12px;
-            }
-            .doc-nav a {
-                padding: 12px 14px;
-                font-size: 0.85em;
-            }
-        }
-
-        /* Scrollbar styling */
-        ::-webkit-scrollbar {
-            width: 8px;
-            height: 8px;
-        }
-
-        ::-webkit-scrollbar-track {
-            background: var(--dt-content-bg);
-        }
-
-        ::-webkit-scrollbar-thumb {
-            background: var(--dt-border-light);
-            border-radius: 4px;
-        }
-
-        ::-webkit-scrollbar-thumb:hover {
-            background: var(--dt-text-muted);
+            .header-banner { padding: 16px 12px; }
+            .logo-text { font-size: 1.2em; }
+            .logo-image { height: 28px; width: 28px; }
+            .content { padding: 16px 12px; }
+            h1 { font-size: 1.4em; }
+            h2 { font-size: 1.15em; }
+            table { font-size: 0.82em; }
+            th, td { padding: 6px 8px; }
+            .doc-nav a { padding: 8px 10px; font-size: 0.72em; }
         }
     </style>
 </head>
@@ -517,21 +245,12 @@
     <header class="header-banner">
         <div class="header-content">
             <div class="logo-container">
-                <img class="logo-image" src="data:image/png;base64,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" alt="DynaBridge Logo" />
-                <div class="logo-text">
-                    <span class="dyna">Dyna</span><span class="bridge">Bridge for Splunk</span>
-                </div>
+                <img class="logo-image" src="dynabridge-symbol.png" alt="DynaBridge" onerror="this.style.display='none'" />
+                <div class="logo-text"><span class="highlight">Dyna</span>Bridge for Splunk</div>
             </div>
-            <p class="header-tagline">
-                Migration Intelligence Platform for Splunk to Dynatrace
-            </p>
-            <span class="version-badge">
-                <span class="dot"></span>
-                Version 4.1.0 &bull; January 2026
-            </span>
-            <div class="doc-title">
-                <h2>DynaBridge Splunk Cloud Export - Specification</h2>
-            </div>
+            <p class="header-tagline">Migration Intelligence Platform for Splunk to Dynatrace</p>
+            <span class="version-badge"><span class="dot"></span>Version 4.0.0</span>
+            <div class="doc-title"><h2>DynaBridge Splunk Cloud Export - Specification</h2></div>
         </div>
     </header>
 
@@ -548,72 +267,66 @@
 
     <main class="content">
 <h1>DynaBridge Splunk Cloud Export Script - Technical Specification</h1>
-
-<h2>Version 3.6.0 | REST API-Only Data Collection for Splunk Cloud</h2>
-
+<h2>Version 4.0.0 | REST API-Only Data Collection for Splunk Cloud</h2>
 <p>
-<strong>Last Updated</strong>: December 2025
+<strong>Last Updated</strong>: January 2026
 <strong>Related Documents</strong>: <a href="SCRIPT-GENERATED-ANALYTICS-REFERENCE.md">Script-Generated Analytics Reference</a> | <a href="README-SPLUNK-CLOUD.md">Cloud README</a> | <a href="EXPORT-SCHEMA.md">Export Schema</a>
 </p>
-
 <hr>
-
 <h2>Executive Summary</h2>
-
 <p>
 This specification defines the complete requirements for a <strong>Splunk Cloud-specific</strong> data collection script that operates <strong>100% via REST API</strong> without any file system access.
 </p>
-
 <h3>Key Differences from Enterprise Script</h3>
-
 <table>
 <thead>
-<tr><td>Aspect</td><td>Enterprise Script</td><td>Cloud Script</td></tr>
-<p>
-</table>___TABLE_SEP___
-</p>
-<table>
-<thead>
+<tr><th>Aspect</th><th>Enterprise Script</th><th>Cloud Script</th></tr>
+</thead>
+<tbody>
 <tr><td><strong>Where it runs</strong></td><td>ON the Splunk server</td><td>ANYWHERE with network access</td></tr>
 <tr><td><strong>Access method</strong></td><td>SSH + File system + REST</td><td><strong>REST API ONLY</strong></td></tr>
 <tr><td><strong>Authentication</strong></td><td>Local Splunk creds</td><td>Cloud credentials or API tokens</td></tr>
 <tr><td><strong>SPLUNK_HOME access</strong></td><td>Yes</td><td>No</td></tr>
 <tr><td><strong>File-based configs</strong></td><td>Yes (props.conf, etc.)</td><td>No - must use REST endpoints</td></tr>
 <tr><td><strong>Output format</strong></td><td>Same <code>.tar.gz</code> structure</td><td>Same <code>.tar.gz</code> structure</td></tr>
-<p>
+</tbody>
 </table>
-</p>
 <hr>
-
-<h2>What's New in v3.6.0</h2>
-
-<h3>Removed Dependencies</h3>
-<ul>
-<li><strong>jq no longer required</strong>: The script now uses Python for all JSON processing, matching the Enterprise script approach. Python 3 is typically available on macOS and Linux.</li>
+<h2>What's New in v4.0.0</h2>
+<h3>Enterprise Resilience Features (MAJOR UPDATE)</h3>
 <p>
-</ul>
+The Cloud script now has <strong>full feature parity</strong> with the Enterprise script for large-scale environments:
 </p>
-<h3>New Features</h3>
 <ul>
-<li><strong>Python-based JSON processing</strong>: All JSON parsing now uses Python 3 (<code>json<em>value</code>, <code>json</em>get</code>, <code>json<em>length</code>, <code>json</em>array</code>, <code>json<em>build</code>, <code>json</em>format</code>)</li>
-<li><strong>Container compatibility</strong>: <code>get_hostname()</code> function with multiple fallbacks for Docker/Kubernetes environments</li>
-<li><strong><code>COLLECT_AUDIT</code> option</strong>: New toggle for audit log sampling (aligned with Enterprise)</li>
-<li><strong>Aligned rate limiting</strong>: Variables renamed for consistency (<code>API<em>DELAY</em>SECONDS</code>, <code>MAX<em>CONCURRENT</em>SEARCHES</code>, <code>SEARCH<em>POLL</em>INTERVAL</code>)</li>
-<li><strong>Default anonymization</strong>: <code>ANONYMIZE_DATA</code> now defaults to <code>true</code> (aligned with Enterprise)</li>
-<p>
+<li><strong>Paginated API calls</strong>: <code>api<em>call</em>paginated()</code> with configurable <code>BATCH_SIZE</code> (default: 100)</li>
+<li><strong>Extended timeouts</strong>: <code>API<em>TIMEOUT=120s</code>, <code>MAX</em>TOTAL_TIME=14400s</code> (4 hours)</li>
+<li><strong>Checkpoint/resume</strong>: Automatic detection and resume of incomplete exports</li>
+<li><strong>Export timing statistics</strong>: Detailed API call tracking and duration reporting</li>
+<li><strong>Zero-configuration reliability</strong>: Defaults tuned for 4000+ dashboards, 10K+ alerts</li>
 </ul>
-</p>
-<h3>Bug Fixes</h3>
+<h3>Enterprise-Ready Defaults</h3>
+<table>
+<thead>
+<tr><th>Setting</th><th>Default</th><th>Purpose</th></tr>
+</thead>
+<tbody>
+<tr><td><code>BATCH_SIZE</code></td><td>100</td><td>Items per API request</td></tr>
+<tr><td><code>RATE_LIMIT_DELAY</code></td><td>0.1s</td><td>Between requests (100ms)</td></tr>
+<tr><td><code>API_TIMEOUT</code></td><td>120s</td><td>Per-request timeout</td></tr>
+<tr><td><code>MAX_TOTAL_TIME</code></td><td>14400s</td><td>4 hours max runtime</td></tr>
+<tr><td><code>MAX_RETRIES</code></td><td>3</td><td>Retry with exponential backoff</td></tr>
+<tr><td><code>CHECKPOINT_ENABLED</code></td><td>true</td><td>Enable checkpoint/resume</td></tr>
+</tbody>
+</table>
+<h3>Previous Features (from v3.6.0)</h3>
 <ul>
-<li>Improved JSON parsing reliability without jq dependency</li>
-<li>Better error handling for REST API failures</li>
-<p>
+<li><strong>Python-based JSON processing</strong>: All JSON parsing uses Python 3</li>
+<li><strong>Container compatibility</strong>: Multiple hostname fallbacks for Docker/Kubernetes</li>
+<li><strong>Aligned rate limiting</strong>: Consistent with Enterprise script</li>
 </ul>
-</p>
 <hr>
-
 <h2>Table of Contents</h2>
-
+<ol>
 <li><a href="#1-splunk-cloud-overview">Splunk Cloud Overview</a></li>
 <li><a href="#2-authentication-methods">Authentication Methods</a></li>
 <li><a href="#3-rest-api-data-collection">REST API Data Collection</a></li>
@@ -625,44 +338,39 @@ This specification defines the complete requirements for a <strong>Splunk Cloud-
 <li><a href="#9-rate-limiting--throttling">Rate Limiting & Throttling</a></li>
 <li><a href="#10-error-handling">Error Handling</a></li>
 <li><a href="#11-security-considerations">Security Considerations</a></li>
-
+</ol>
 <hr>
-
 <h2>1. Splunk Cloud Overview</h2>
-
 <h3>1.1 Splunk Cloud Flavors</h3>
-
 <table>
 <thead>
-<tr><td>Flavor</td><td>Description</td><td>API Access</td><td>Notes</td></tr>
-<p>
-</table>___TABLE_SEP___
-</p>
-<table>
-<thead>
+<tr><th>Flavor</th><th>Description</th><th>API Access</th><th>Notes</th></tr>
+</thead>
+<tbody>
 <tr><td><strong>Splunk Cloud Classic</strong></td><td>Original multi-tenant cloud</td><td>Full REST API</td><td>Legacy, being phased out</td></tr>
 <tr><td><strong>Splunk Cloud Victoria</strong></td><td>Latest cloud architecture</td><td>Full REST API</td><td>Current default</td></tr>
 <tr><td><strong>Splunk Cloud on AWS</strong></td><td>AWS-hosted single tenant</td><td>Full REST API</td><td>Enterprise features</td></tr>
 <tr><td><strong>Splunk Cloud on GCP</strong></td><td>GCP-hosted single tenant</td><td>Full REST API</td><td>Enterprise features</td></tr>
-<p>
+</tbody>
 </table>
-</p>
 <h3>1.2 Cloud Stack URL Patterns</h3>
+<pre><code># Standard Splunk Cloud URL patterns
+https://&lt;stack-name&gt;.splunkcloud.com           # Web UI
+https://&lt;stack-name&gt;.splunkcloud.com:8089      # REST API (management port)
 
-<p>
-<strong><em>CODEBLOCK_0</em></strong>
-</p>
+# Examples
+https://acme-corp.splunkcloud.com
+https://acme-corp.splunkcloud.com:8089/services/server/info
 
+# Some stacks use different patterns
+https://inputs.&lt;stack-name&gt;.splunkcloud.com    # HEC endpoint
+https://api.&lt;stack-name&gt;.splunkcloud.com       # API endpoint (some configs)</code></pre>
 <h3>1.3 What's Accessible via REST API</h3>
-
 <table>
 <thead>
-<tr><td>Data Type</td><td>REST Endpoint</td><td>Available?</td></tr>
-<p>
-</table>___TABLE_SEP___
-</p>
-<table>
-<thead>
+<tr><th>Data Type</th><th>REST Endpoint</th><th>Available?</th></tr>
+</thead>
+<tbody>
 <tr><td>Server Info</td><td><code>/services/server/info</code></td><td>✅ Yes</td></tr>
 <tr><td>Installed Apps</td><td><code>/services/apps/local</code></td><td>✅ Yes</td></tr>
 <tr><td>Dashboards</td><td><code>/servicesNS/-/-/data/ui/views</code></td><td>✅ Yes</td></tr>
@@ -682,38 +390,29 @@ This specification defines the complete requirements for a <strong>Splunk Cloud-
 <tr><td>Search Jobs</td><td><code>/services/search/jobs</code></td><td>✅ Yes</td></tr>
 <tr><td>KV Store Collections</td><td><code>/servicesNS/-/-/storage/collections/config</code></td><td>✅ Yes</td></tr>
 <tr><td>Audit Logs</td><td><code>index=_audit</code> via search</td><td>⚠️ Requires search</td></tr>
-<p>
+</tbody>
 </table>
-</p>
 <h3>1.4 What's NOT Accessible</h3>
-
 <table>
 <thead>
-<tr><td>Data Type</td><td>Why Not Available</td></tr>
-<p>
-</table>___TABLE_SEP___
-</p>
-<table>
-<thead>
+<tr><th>Data Type</th><th>Why Not Available</th></tr>
+</thead>
+<tbody>
 <tr><td>Raw config files</td><td>No file system access</td></tr>
 <tr><td><code>$SPLUNK_HOME/etc/</code></td><td>No file system access</td></tr>
 <tr><td>Audit.log file</td><td>No file system access</td></tr>
 <tr><td>Bucket metadata</td><td>No file system access</td></tr>
 <tr><td>Internal indexes (some)</td><td>Cloud restrictions</td></tr>
 <tr><td>License file</td><td>Cloud-managed</td></tr>
-<p>
+</tbody>
 </table>
-</p>
 <hr>
-
 <h2>2. Authentication Methods</h2>
-
 <h3>2.1 Username/Password Authentication</h3>
-
-<p>
-<strong><em>CODEBLOCK_1</em></strong>
-</p>
-
+<pre><code class="language-bash"># Basic authentication
+curl -k -u &quot;username:password&quot; \
+  &quot;https://acme.splunkcloud.com:8089/services/server/info&quot; \
+  -d &quot;output_mode=json&quot;</code></pre>
 <p>
 <strong>Requirements</strong>:
 </p>
@@ -721,23 +420,21 @@ This specification defines the complete requirements for a <strong>Splunk Cloud-
 <li>Splunk Cloud admin account</li>
 <li>Account must have required capabilities</li>
 <li>May require MFA bypass token for API access</li>
-<p>
 </ul>
-</p>
 <h3>2.2 Splunk Authentication Token</h3>
-
-<p>
-<strong><em>CODEBLOCK_2</em></strong>
-</p>
-
+<pre><code class="language-bash"># Token-based authentication (recommended)
+curl -k -H &quot;Authorization: Bearer &lt;token&gt;&quot; \
+  &quot;https://acme.splunkcloud.com:8089/services/server/info&quot; \
+  -d &quot;output_mode=json&quot;</code></pre>
 <p>
 <strong>Creating an Auth Token</strong>:
 </p>
+<ol>
 <li>Log into Splunk Cloud web UI</li>
 <li>Settings → Tokens</li>
 <li>Create new token with required permissions</li>
 <li>Set appropriate expiration</li>
-
+</ol>
 <p>
 <strong>Required Token Permissions</strong>:
 </p>
@@ -748,97 +445,118 @@ This specification defines the complete requirements for a <strong>Splunk Cloud-
 <li><code>list_indexes</code></li>
 <li><code>search</code></li>
 <li><code>rest_access</code></li>
-<p>
 </ul>
-</p>
 <h3>2.3 Session Token Authentication</h3>
+<pre><code class="language-bash"># Step 1: Get session key
+SESSION_KEY=$(curl -k -u &quot;user:pass&quot; \
+  &quot;https://acme.splunkcloud.com:8089/services/auth/login&quot; \
+  -d &quot;username=user&amp;password=pass&quot; \
+  | grep -oP &#039;(?&lt;=&lt;sessionKey&gt;)[^&lt;]+&#039;)
 
-<p>
-<strong><em>CODEBLOCK_3</em></strong>
-</p>
-
+# Step 2: Use session key
+curl -k -H &quot;Authorization: Splunk $SESSION_KEY&quot; \
+  &quot;https://acme.splunkcloud.com:8089/services/server/info&quot;</code></pre>
 <h3>2.4 Authentication Decision Flow</h3>
-
-<p>
-<strong><em>CODEBLOCK_4</em></strong>
-</p>
-
+<pre><code>┌─────────────────────────────────────────────────────────────┐
+│                   AUTHENTICATION FLOW                        │
+└─────────────────────────────────────────────────────────────┘
+                           │
+                           ▼
+┌─────────────────────────────────────────────────────────────┐
+│ Do you have an API Token?                                   │
+│   └─ YES → Use token-based auth (most secure)               │
+│   └─ NO  → Do you have username/password?                   │
+│             └─ YES → Is MFA required?                       │
+│                       └─ YES → Need MFA bypass or token    │
+│                       └─ NO  → Use basic auth               │
+│             └─ NO  → Cannot authenticate                    │
+└─────────────────────────────────────────────────────────────┘</code></pre>
 <hr>
-
 <h2>3. REST API Data Collection</h2>
-
 <h3>3.1 Collection Strategy</h3>
-
 <p>
 Since we cannot read files, all data must come from REST API endpoints. The strategy is:
 </p>
-
+<ol>
 <li><strong>Server & Environment Info</strong>: Direct REST calls</li>
 <li><strong>Apps & Configurations</strong>: Use <code>/configs/conf-{name}</code> endpoints</li>
 <li><strong>Knowledge Objects</strong>: Use <code>/servicesNS/-/-/</code> namespace</li>
 <li><strong>Users & RBAC</strong>: Use <code>/services/authentication/</code> and <code>/services/authorization/</code></li>
 <li><strong>Usage Analytics</strong>: Run searches against <code>_audit</code> index</li>
 <li><strong>Dashboards</strong>: Combine views endpoint with KV Store for Dashboard Studio</li>
-
+</ol>
 <h3>3.2 Configuration Reconstruction</h3>
-
 <p>
 Since we can't read <code>props.conf</code> directly, we reconstruct it from REST:
 </p>
+<pre><code class="language-bash"># Get all props stanzas
+curl -k -u &quot;$USER:$PASS&quot; \
+  &quot;https://$STACK:8089/servicesNS/-/-/configs/conf-props&quot; \
+  -d &quot;output_mode=json&quot; -d &quot;count=0&quot;
 
-<p>
-<strong><em>CODEBLOCK_5</em></strong>
-</p>
-
+# Get all transforms stanzas
+curl -k -u &quot;$USER:$PASS&quot; \
+  &quot;https://$STACK:8089/servicesNS/-/-/configs/conf-transforms&quot; \
+  -d &quot;output_mode=json&quot; -d &quot;count=0&quot;</code></pre>
 <h3>3.3 Dashboard Collection</h3>
+<pre><code class="language-bash"># Classic Dashboards (SimpleXML)
+curl -k -u &quot;$USER:$PASS&quot; \
+  &quot;https://$STACK:8089/servicesNS/-/-/data/ui/views&quot; \
+  -d &quot;output_mode=json&quot; -d &quot;count=0&quot;
 
-<p>
-<strong><em>CODEBLOCK_6</em></strong>
-</p>
+# For each dashboard, get the full definition
+curl -k -u &quot;$USER:$PASS&quot; \
+  &quot;https://$STACK:8089/servicesNS/-/-/data/ui/views/{dashboard_name}&quot; \
+  -d &quot;output_mode=json&quot;
 
+# Dashboard Studio (stored in KV Store)
+# These are included in the views endpoint with isDashboardStudio=true</code></pre>
 <h3>3.4 Saved Searches & Alerts</h3>
+<pre><code class="language-bash"># Get all saved searches (includes alerts, reports, scheduled searches)
+curl -k -u &quot;$USER:$PASS&quot; \
+  &quot;https://$STACK:8089/servicesNS/-/-/saved/searches&quot; \
+  -d &quot;output_mode=json&quot; -d &quot;count=0&quot;
 
-<p>
-<strong><em>CODEBLOCK_7</em></strong>
-</p>
-
+# Each result includes:
+# - Search query (SPL)
+# - Schedule (cron_schedule)
+# - Alert settings (alert.*, action.*)
+# - Owner and permissions</code></pre>
 <h3>3.5 Usage Analytics via Search</h3>
+<pre><code class="language-bash"># Create a search job to get usage analytics
+curl -k -u &quot;$USER:$PASS&quot; \
+  &quot;https://$STACK:8089/services/search/jobs&quot; \
+  -d &quot;search=search index=_audit action=search earliest=-30d | stats count by user, savedsearch_name&quot; \
+  -d &quot;output_mode=json&quot;
 
-<p>
-<strong><em>CODEBLOCK_8</em></strong>
-</p>
+# Poll for completion
+curl -k -u &quot;$USER:$PASS&quot; \
+  &quot;https://$STACK:8089/services/search/jobs/{sid}&quot;
 
+# Get results
+curl -k -u &quot;$USER:$PASS&quot; \
+  &quot;https://$STACK:8089/services/search/jobs/{sid}/results&quot; \
+  -d &quot;output_mode=json&quot; -d &quot;count=0&quot;</code></pre>
 <hr>
-
 <h2>4. API Endpoints Reference</h2>
-
 <h3>4.1 System Information</h3>
-
 <table>
 <thead>
-<tr><td>Endpoint</td><td>Method</td><td>Purpose</td></tr>
-<p>
-</table>___TABLE_SEP___
-</p>
-<table>
-<thead>
+<tr><th>Endpoint</th><th>Method</th><th>Purpose</th></tr>
+</thead>
+<tbody>
 <tr><td><code>/services/server/info</code></td><td>GET</td><td>Server version, OS, GUID</td></tr>
 <tr><td><code>/services/server/settings</code></td><td>GET</td><td>Server configuration</td></tr>
 <tr><td><code>/services/apps/local</code></td><td>GET</td><td>Installed apps list</td></tr>
 <tr><td><code>/services/licenser/licenses</code></td><td>GET</td><td>License information</td></tr>
-<p>
+</tbody>
 </table>
-</p>
 <h3>4.2 Knowledge Objects</h3>
-
 <table>
 <thead>
-<tr><td>Endpoint</td><td>Method</td><td>Purpose</td></tr>
-<p>
-</table>___TABLE_SEP___
-</p>
-<table>
-<thead>
+<tr><th>Endpoint</th><th>Method</th><th>Purpose</th></tr>
+</thead>
+<tbody>
 <tr><td><code>/servicesNS/-/-/data/ui/views</code></td><td>GET</td><td>All dashboards</td></tr>
 <tr><td><code>/servicesNS/-/-/saved/searches</code></td><td>GET</td><td>All saved searches/alerts</td></tr>
 <tr><td><code>/servicesNS/-/-/admin/macros</code></td><td>GET</td><td>All search macros</td></tr>
@@ -846,273 +564,562 @@ Since we can't read <code>props.conf</code> directly, we reconstruct it from RES
 <tr><td><code>/servicesNS/-/-/configs/conf-tags</code></td><td>GET</td><td>All tags</td></tr>
 <tr><td><code>/servicesNS/-/-/data/lookup-table-files</code></td><td>GET</td><td>Lookup file definitions</td></tr>
 <tr><td><code>/servicesNS/-/-/data/transforms/extractions</code></td><td>GET</td><td>Field extractions</td></tr>
-<p>
+</tbody>
 </table>
-</p>
 <h3>4.3 Configurations (Reconstructed)</h3>
-
 <table>
 <thead>
-<tr><td>Endpoint</td><td>Method</td><td>Purpose</td></tr>
-<p>
-</table>___TABLE_SEP___
-</p>
-<table>
-<thead>
+<tr><th>Endpoint</th><th>Method</th><th>Purpose</th></tr>
+</thead>
+<tbody>
 <tr><td><code>/servicesNS/-/-/configs/conf-props</code></td><td>GET</td><td>Props.conf equivalent</td></tr>
 <tr><td><code>/servicesNS/-/-/configs/conf-transforms</code></td><td>GET</td><td>Transforms.conf equivalent</td></tr>
 <tr><td><code>/servicesNS/-/-/configs/conf-indexes</code></td><td>GET</td><td>Indexes.conf equivalent</td></tr>
 <tr><td><code>/servicesNS/-/-/configs/conf-inputs</code></td><td>GET</td><td>Inputs.conf equivalent</td></tr>
 <tr><td><code>/servicesNS/-/-/configs/conf-outputs</code></td><td>GET</td><td>Outputs.conf equivalent</td></tr>
 <tr><td><code>/servicesNS/-/-/configs/conf-savedsearches</code></td><td>GET</td><td>Savedsearches.conf equivalent</td></tr>
-<p>
+</tbody>
 </table>
-</p>
 <h3>4.4 Users & RBAC</h3>
-
 <table>
 <thead>
-<tr><td>Endpoint</td><td>Method</td><td>Purpose</td></tr>
-<p>
-</table>___TABLE_SEP___
-</p>
-<table>
-<thead>
+<tr><th>Endpoint</th><th>Method</th><th>Purpose</th></tr>
+</thead>
+<tbody>
 <tr><td><code>/services/authentication/users</code></td><td>GET</td><td>All users</td></tr>
 <tr><td><code>/services/authorization/roles</code></td><td>GET</td><td>All roles</td></tr>
 <tr><td><code>/services/authentication/current-context</code></td><td>GET</td><td>Current user context</td></tr>
 <tr><td><code>/services/admin/SAML-groups</code></td><td>GET</td><td>SAML group mappings</td></tr>
-<p>
+</tbody>
 </table>
-</p>
 <h3>4.5 Indexes & Data</h3>
-
 <table>
 <thead>
-<tr><td>Endpoint</td><td>Method</td><td>Purpose</td></tr>
-<p>
-</table>___TABLE_SEP___
-</p>
-<table>
-<thead>
+<tr><th>Endpoint</th><th>Method</th><th>Purpose</th></tr>
+</thead>
+<tbody>
 <tr><td><code>/services/data/indexes</code></td><td>GET</td><td>Index list and settings</td></tr>
 <tr><td><code>/services/data/indexes-extended</code></td><td>GET</td><td>Extended index stats</td></tr>
 <tr><td><code>/services/catalog/metricstore/dimensions</code></td><td>GET</td><td>Metric dimensions</td></tr>
-<p>
+</tbody>
 </table>
-</p>
 <h3>4.6 Search for Analytics</h3>
-
 <table>
 <thead>
-<tr><td>Endpoint</td><td>Method</td><td>Purpose</td></tr>
-<p>
-</table>___TABLE_SEP___
-</p>
-<table>
-<thead>
+<tr><th>Endpoint</th><th>Method</th><th>Purpose</th></tr>
+</thead>
+<tbody>
 <tr><td><code>/services/search/jobs</code></td><td>POST</td><td>Create search job</td></tr>
 <tr><td><code>/services/search/jobs/{sid}</code></td><td>GET</td><td>Check job status</td></tr>
 <tr><td><code>/services/search/jobs/{sid}/results</code></td><td>GET</td><td>Get search results</td></tr>
-<p>
+</tbody>
 </table>
-</p>
 <hr>
-
 <h2>5. Script Flow</h2>
-
 <h3>5.1 Complete Script Flow</h3>
-
-<p>
-<strong><em>CODEBLOCK_9</em></strong>
-</p>
-
+<pre><code>┌─────────────────────────────────────────────────────────────────────┐
+│                         SCRIPT START                                 │
+│                                                                      │
+│  • Display banner                                                   │
+│  • Check prerequisites (curl, jq recommended)                       │
+│  • Explain this is for Splunk Cloud                                 │
+└─────────────────────────────────────────────────────────────────────┘
+                                  │
+                                  ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│ STEP 1: SPLUNK CLOUD CONNECTION                                     │
+│                                                                      │
+│ ╔════════════════════════════════════════════════════════════════╗  │
+│ ║  WHY WE ASK:                                                    ║  │
+│ ║  We need to connect to your Splunk Cloud instance via REST API. ║  │
+│ ║  This is the only way to access Splunk Cloud data - there is    ║  │
+│ ║  no file system or SSH access to Splunk Cloud infrastructure.   ║  │
+│ ╚════════════════════════════════════════════════════════════════╝  │
+│                                                                      │
+│ [PROMPT] Enter your Splunk Cloud stack URL:                        │
+│   Example: acme-corp.splunkcloud.com                                │
+│   &gt; _______________                                                  │
+│                                                                      │
+│ Testing connection to https://acme-corp.splunkcloud.com:8089...     │
+│ ✓ Splunk Cloud instance reachable                                   │
+└─────────────────────────────────────────────────────────────────────┘
+                                  │
+                                  ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│ STEP 2: AUTHENTICATION                                              │
+│                                                                      │
+│ ╔════════════════════════════════════════════════════════════════╗  │
+│ ║  WHY WE ASK:                                                    ║  │
+│ ║  REST API access requires authentication. You can use either:   ║  │
+│ ║  • Username/Password (your Splunk Cloud login)                  ║  │
+│ ║  • API Token (more secure, recommended)                         ║  │
+│ ║                                                                 ║  │
+│ ║  REQUIRED PERMISSIONS:                                          ║  │
+│ ║  • admin_all_objects - Access all knowledge objects             ║  │
+│ ║  • list_users, list_roles - Access RBAC data                    ║  │
+│ ║  • search - Run analytics queries                               ║  │
+│ ╚════════════════════════════════════════════════════════════════╝  │
+│                                                                      │
+│ [PROMPT] Authentication method:                                      │
+│   1. Username/Password                                               │
+│   2. API Token (recommended)                                         │
+│                                                                      │
+│ [If option 1]:                                                       │
+│   Enter username: admin                                              │
+│   Enter password: ********                                           │
+│                                                                      │
+│ [If option 2]:                                                       │
+│   Enter API token: ********                                          │
+│                                                                      │
+│ Testing authentication...                                            │
+│ ✓ Authentication successful                                         │
+│ ✓ User: admin@acme-corp.com                                         │
+│ ✓ Capabilities: admin_all_objects, list_users, search               │
+└─────────────────────────────────────────────────────────────────────┘
+                                  │
+                                  ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│ STEP 3: ENVIRONMENT DETECTION                                       │
+│                                                                      │
+│ Detecting Splunk Cloud environment...                                │
+│                                                                      │
+│ ┌────────────────────────────────────────────────────────────────┐  │
+│ │ Detected Environment:                                          │  │
+│ │   Stack: acme-corp.splunkcloud.com                             │  │
+│ │   Type: Splunk Cloud Victoria Experience                       │  │
+│ │   Version: 9.1.2312                                            │  │
+│ │   GUID: ABC123-DEF456-...                                      │  │
+│ │   Apps: 45 installed                                           │  │
+│ │   Users: 150                                                   │  │
+│ └────────────────────────────────────────────────────────────────┘  │
+│                                                                      │
+│ [PROMPT] Is this the correct environment? (Y/n)                     │
+└─────────────────────────────────────────────────────────────────────┘
+                                  │
+                                  ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│ STEP 4: APPLICATION SELECTION                                       │
+│                                                                      │
+│ [Same as Enterprise script - list apps, allow selection]            │
+│                                                                      │
+│   1. Export ALL applications (Recommended)                          │
+│   2. Enter specific app names (comma-separated)                     │
+│   3. Select from numbered list                                      │
+└─────────────────────────────────────────────────────────────────────┘
+                                  │
+                                  ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│ STEP 5: DATA CATEGORIES                                             │
+│                                                                      │
+│ [Same categories as Enterprise, but note Cloud limitations]         │
+│                                                                      │
+│ [✓] 1. Configurations (via REST - reconstructed from API)          │
+│ [✓] 2. Dashboards (Classic + Dashboard Studio)                      │
+│ [✓] 3. Alerts &amp; Saved Searches                                      │
+│ [✓] 4. Users &amp; RBAC                                                 │
+│ [✓] 5. Usage Analytics (via search on _audit)                       │
+│ [✓] 6. Index Statistics                                             │
+│ [ ] 7. Lookup Table Contents (may be large)                         │
+│                                                                      │
+│ Note: Some data may be limited due to Cloud restrictions            │
+└─────────────────────────────────────────────────────────────────────┘
+                                  │
+                                  ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│ STEP 6: DATA COLLECTION                                             │
+│                                                                      │
+│ [1/10] Collecting server information...              ✓              │
+│ [2/10] Collecting installed apps...                  ✓              │
+│ [3/10] Collecting configurations via REST...         ⏳ 45%         │
+│        └─ props.conf (via /configs/conf-props)                      │
+│        └─ transforms.conf (via /configs/conf-transforms)            │
+│ [4/10] Collecting dashboards...                      ○              │
+│ [5/10] Collecting saved searches &amp; alerts...         ○              │
+│ [6/10] Collecting users and roles...                 ○              │
+│ [7/10] Running usage analytics searches...           ○              │
+│ [8/10] Collecting index statistics...                ○              │
+│ [9/10] Collecting macros &amp; eventtypes...             ○              │
+│ [10/10] Generating summary report...                 ○              │
+│                                                                      │
+│ Note: Some API calls may be rate-limited. Please be patient.        │
+└─────────────────────────────────────────────────────────────────────┘
+                                  │
+                                  ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│ STEP 7: ARCHIVE CREATION &amp; COMPLETION                               │
+│                                                                      │
+│ Creating compressed archive...                                       │
+│ ✓ Archive created: ./dynabridge_cloud_export_acme_20240115.tar.gz  │
+│ ✓ Size: 125 MB                                                      │
+│                                                                      │
+│ NEXT STEPS:                                                         │
+│ 1. Upload this file to DynaBridge in Dynatrace                      │
+│ 2. The export format is compatible with Enterprise exports          │
+└─────────────────────────────────────────────────────────────────────┘</code></pre>
 <hr>
-
 <h2>6. Output Structure</h2>
-
 <h3>6.1 Directory Structure</h3>
-
 <p>
 The output structure matches the Enterprise export for DynaBridge compatibility:
 </p>
-
+<pre><code>dynabridge_cloud_export_[stack]_[timestamp]/
+│
+├── dynasplunk-env-summary.md          # Master summary
+├── _metadata.json                      # Export metadata
+├── _environment_profile.json           # Cloud environment details
+│
+├── _systeminfo/
+│   ├── server_info.json               # From /services/server/info
+│   ├── installed_apps.json            # From /services/apps/local
+│   └── license_info.json              # From /services/licenser/licenses
+│
+├── _rbac/
+│   ├── users.json                     # From /services/authentication/users
+│   ├── roles.json                     # From /services/authorization/roles
+│   └── saml_groups.json               # From /services/admin/SAML-groups
+│
+├── _usage_analytics/
+│   ├── search_activity.json           # From search on _audit
+│   ├── dashboard_usage.json           # From search on _internal
+│   └── alert_metrics.json             # From search on _audit
+│
+├── _indexes/
+│   └── indexes.json                   # From /services/data/indexes
+│
+├── _configs/                          # Reconstructed from REST
+│   ├── props.json                     # From /configs/conf-props
+│   ├── transforms.json                # From /configs/conf-transforms
+│   ├── indexes.json                   # From /configs/conf-indexes
+│   └── inputs.json                    # From /configs/conf-inputs
+│
+├── [app_name]/                        # Per-app data
+│   ├── app_info.json                  # App metadata
+│   ├── dashboards/                    # Dashboard definitions
+│   │   ├── dashboard_list.json
+│   │   └── [dashboard_name].json
+│   ├── savedsearches.json             # Alerts and saved searches
+│   ├── macros.json                    # Search macros
+│   ├── eventtypes.json                # Event types
+│   ├── tags.json                      # Tags
+│   ├── lookups/                       # Lookup definitions
+│   │   ├── lookup_files.json
+│   │   └── [lookup_name].csv          # If content collection enabled
+│   └── field_extractions.json         # Field extractions
+│
+└── dashboard_studio/                  # Dashboard Studio dashboards
+    ├── dashboards_list.json
+    └── [dashboard_name].json</code></pre>
+<h3>6.2 Updated Output Structure (v4.0.0)</h3>
 <p>
-<strong><em>CODEBLOCK_10</em></strong>
+The v4.0.0 output includes additional usage intelligence files:
 </p>
-
-<h3>6.2 Updated Output Structure (v3.5.1)</h3>
-
-<p>
-The v3.5.1 output includes additional usage intelligence files:
-</p>
-
-<p>
-<strong><em>CODEBLOCK_11</em></strong>
-</p>
-
+<pre><code>dynabridge_cloud_export_[stack]_[timestamp]/
+│
+├── manifest.json                         # Standardized metadata schema
+├── dynasplunk-env-summary.md             # Human-readable summary report
+│
+├── _usage_analytics/
+│   ├── search_activity.json              # Search frequency data
+│   ├── dashboard_usage.json              # Dashboard view metrics
+│   ├── alert_metrics.json                # Alert trigger statistics
+│   ├── dashboard_ownership.json          # Dashboard → owner mapping
+│   ├── alert_ownership.json              # Alert → owner mapping
+│   ├── ownership_summary.json            # Ownership by user summary
+│   ├── top_indexes_by_volume.json        # Volume analysis
+│   ├── top_sourcetypes_by_volume.json    # Sourcetype volume data
+│   ├── top_hosts_by_volume.json          # Host volume data
+│   ├── zero_view_dashboards.json         # Elimination candidates
+│   └── never_fired_alerts.json           # Elimination candidates
+│
+└── [other directories as before]</code></pre>
 <hr>
-
 <h2>7. Usage Intelligence</h2>
-
 <h3>7.1 Ownership Mapping</h3>
-
 <p>
 The script collects ownership information for user-centric migration planning:
 </p>
+<pre><code class="language-json">// dashboard_ownership.json
+{
+  &quot;results&quot;: [
+    {
+      &quot;dashboard&quot;: &quot;security_overview&quot;,
+      &quot;app&quot;: &quot;security_app&quot;,
+      &quot;owner&quot;: &quot;security_team&quot;,
+      &quot;sharing&quot;: &quot;app&quot;
+    }
+  ]
+}
 
-<p>
-<strong><em>CODEBLOCK_12</em></strong>
-</p>
+// alert_ownership.json
+{
+  &quot;results&quot;: [
+    {
+      &quot;alert&quot;: &quot;critical_security_alert&quot;,
+      &quot;app&quot;: &quot;security_app&quot;,
+      &quot;owner&quot;: &quot;security_team&quot;,
+      &quot;is_scheduled&quot;: true
+    }
+  ]
+}
 
+// ownership_summary.json
+{
+  &quot;results&quot;: [
+    {
+      &quot;owner&quot;: &quot;security_team&quot;,
+      &quot;dashboard_count&quot;: 32,
+      &quot;alert_count&quot;: 45
+    }
+  ]
+}</code></pre>
 <h3>7.2 Volume Analysis</h3>
-
 <p>
 Daily ingestion volume analysis for capacity planning:
 </p>
+<pre><code class="language-json">// top_indexes_by_volume.json
+{
+  &quot;results&quot;: [
+    {
+      &quot;index&quot;: &quot;main&quot;,
+      &quot;total_gb&quot;: 12.34,
+      &quot;event_count&quot;: 123456789
+    }
+  ]
+}
 
-<p>
-<strong><em>CODEBLOCK_13</em></strong>
-</p>
-
+// top_sourcetypes_by_volume.json
+{
+  &quot;results&quot;: [
+    {
+      &quot;sourcetype&quot;: &quot;access_combined&quot;,
+      &quot;total_gb&quot;: 5.67,
+      &quot;event_count&quot;: 45678901
+    }
+  ]
+}</code></pre>
 <h3>7.3 Elimination Candidates</h3>
-
 <p>
 Identifies unused assets that may be candidates for retirement:
 </p>
-
 <p>
 <strong>Dashboards with Zero Views:</strong>
-<strong><em>CODEBLOCK_14</em></strong>
 </p>
-
+<pre><code class="language-json">// zero_view_dashboards.json
+{
+  &quot;results&quot;: [
+    {
+      &quot;dashboard&quot;: &quot;old_unused_dashboard&quot;,
+      &quot;app&quot;: &quot;legacy_app&quot;,
+      &quot;owner&quot;: &quot;departed_user&quot;,
+      &quot;views_30d&quot;: 0
+    }
+  ]
+}</code></pre>
 <p>
 <strong>Alerts That Never Fired:</strong>
-<strong><em>CODEBLOCK_15</em></strong>
 </p>
-
+<pre><code class="language-json">// never_fired_alerts.json
+{
+  &quot;results&quot;: [
+    {
+      &quot;alert&quot;: &quot;never_triggered_alert&quot;,
+      &quot;app&quot;: &quot;test_app&quot;,
+      &quot;owner&quot;: &quot;test_user&quot;,
+      &quot;triggers_30d&quot;: 0
+    }
+  ]
+}</code></pre>
 <hr>
-
 <h2>8. Manifest Schema</h2>
-
 <h3>8.1 Guaranteed manifest.json Schema</h3>
-
 <p>
 The script generates a standardized <code>manifest.json</code> file with a guaranteed schema for DynaBridge consumption:
 </p>
+<pre><code class="language-json">{
+  &quot;schemaVersion&quot;: &quot;4.0.0&quot;,
+  &quot;exportType&quot;: &quot;splunk_cloud&quot;,
+  &quot;exportTimestamp&quot;: &quot;2025-12-03T10:30:00Z&quot;,
+  &quot;scriptVersion&quot;: &quot;4.0.0&quot;,
 
-<p>
-<strong><em>CODEBLOCK_16</em></strong>
-</p>
+  &quot;cloudEnvironment&quot;: {
+    &quot;stackUrl&quot;: &quot;acme-corp.splunkcloud.com&quot;,
+    &quot;stackType&quot;: &quot;victoria&quot;,
+    &quot;splunkVersion&quot;: &quot;9.1.2312&quot;,
+    &quot;serverGuid&quot;: &quot;ABC123-DEF456-...&quot;,
+    &quot;cloudRegion&quot;: &quot;aws-us-west-2&quot;
+  },
 
+  &quot;authentication&quot;: {
+    &quot;method&quot;: &quot;api_token&quot;,
+    &quot;username&quot;: &quot;admin@acme-corp.com&quot;,
+    &quot;capabilities&quot;: [&quot;admin_all_objects&quot;, &quot;list_users&quot;, &quot;search&quot;]
+  },
+
+  &quot;collection&quot;: {
+    &quot;apps&quot;: 45,
+    &quot;dashboards&quot;: 245,
+    &quot;alerts&quot;: 187,
+    &quot;users&quot;: 150,
+    &quot;indexes&quot;: 32,
+    &quot;apiCallsMade&quot;: 523,
+    &quot;rateLimitHits&quot;: 3,
+    &quot;errors&quot;: 0,
+    &quot;warnings&quot;: 5
+  },
+
+  &quot;usageIntelligence&quot;: {
+    &quot;analysisPeriod&quot;: &quot;30d&quot;,
+    &quot;totalSearches&quot;: 45678,
+    &quot;totalDashboardViews&quot;: 12345,
+    &quot;totalAlertTriggers&quot;: 4567,
+    &quot;topIndexesByVolume&quot;: [...],
+    &quot;topSourcetypesByVolume&quot;: [...],
+    &quot;topHostsByVolume&quot;: [...],
+    &quot;elimination_candidates&quot;: {
+      &quot;zeroDashboards&quot;: 12,
+      &quot;neverFiredAlerts&quot;: 23
+    }
+  },
+
+  &quot;exportDuration&quot;: {
+    &quot;startTime&quot;: &quot;2025-12-03T10:25:00Z&quot;,
+    &quot;endTime&quot;: &quot;2025-12-03T10:32:45Z&quot;,
+    &quot;durationSeconds&quot;: 465
+  }
+}</code></pre>
 <h3>8.2 Schema Versioning</h3>
-
 <table>
 <thead>
-<tr><td>Schema Version</td><td>Script Version</td><td>Key Changes</td></tr>
-<p>
-</table>___TABLE_SEP___
-</p>
-<table>
-<thead>
+<tr><th>Schema Version</th><th>Script Version</th><th>Key Changes</th></tr>
+</thead>
+<tbody>
 <tr><td>1.0.0</td><td>1.0.0</td><td>Initial schema</td></tr>
 <tr><td>3.0.0</td><td>3.0.0</td><td>Added usage analytics</td></tr>
 <tr><td>3.5.0</td><td>3.5.0</td><td>Added ownership mapping, elimination candidates, volume analysis</td></tr>
-<p>
+<tr><td>4.0.0</td><td>4.0.0</td><td>Enterprise resilience: paginated APIs, checkpoints, extended timeouts, timing stats</td></tr>
+</tbody>
 </table>
-</p>
 <hr>
-
 <h2>9. Rate Limiting & Throttling</h2>
-
 <h3>9.1 Splunk Cloud API Limits</h3>
-
 <p>
 Splunk Cloud may enforce rate limits on REST API calls:
 </p>
-
 <table>
 <thead>
-<tr><td>Limit Type</td><td>Typical Value</td><td>Handling Strategy</td></tr>
-<p>
-</table>___TABLE_SEP___
-</p>
-<table>
-<thead>
+<tr><th>Limit Type</th><th>Typical Value</th><th>Handling Strategy</th></tr>
+</thead>
+<tbody>
 <tr><td>Requests per minute</td><td>100-500</td><td>Exponential backoff</td></tr>
 <tr><td>Concurrent connections</td><td>10-50</td><td>Sequential processing</td></tr>
 <tr><td>Response size</td><td>50MB</td><td>Pagination</td></tr>
 <tr><td>Search concurrency</td><td>5-10</td><td>Queue searches</td></tr>
-<p>
+</tbody>
 </table>
-</p>
 <h3>9.2 Rate Limit Detection</h3>
-
-<p>
-<strong><em>CODEBLOCK_17</em></strong>
-</p>
-
+<pre><code class="language-bash"># HTTP 429 indicates rate limiting
+if [ &quot;$http_code&quot; = &quot;429&quot; ]; then
+  retry_after=$(echo &quot;$headers&quot; | grep -i &quot;Retry-After&quot; | cut -d: -f2)
+  sleep $retry_after
+  # Retry request
+fi</code></pre>
 <h3>9.3 Throttling Strategy</h3>
-
-<p>
-<strong><em>CODEBLOCK_18</em></strong>
-</p>
-
+<pre><code>┌─────────────────────────────────────────────────────────────┐
+│                    THROTTLING STRATEGY                       │
+├─────────────────────────────────────────────────────────────┤
+│                                                              │
+│  1. Start with normal request rate                          │
+│                                                              │
+│  2. On 429 response:                                        │
+│     • Check Retry-After header                              │
+│     • Wait specified time (or default 60s)                  │
+│     • Reduce request rate by 50%                            │
+│     • Retry request                                         │
+│                                                              │
+│  3. Implement exponential backoff:                          │
+│     • 1st retry: wait 1 second                              │
+│     • 2nd retry: wait 2 seconds                             │
+│     • 3rd retry: wait 4 seconds                             │
+│     • Max: wait 60 seconds                                  │
+│                                                              │
+│  4. For large collections (&gt;1000 items):                    │
+│     • Use pagination (count=100, offset=N)                  │
+│     • Add 100ms delay between pages                         │
+│                                                              │
+└─────────────────────────────────────────────────────────────┘</code></pre>
 <hr>
-
 <h2>10. Error Handling</h2>
-
 <h3>10.1 Common Errors</h3>
-
 <table>
 <thead>
-<tr><td>HTTP Code</td><td>Meaning</td><td>Handling</td></tr>
-<p>
-</table>___TABLE_SEP___
-</p>
-<table>
-<thead>
+<tr><th>HTTP Code</th><th>Meaning</th><th>Handling</th></tr>
+</thead>
+<tbody>
 <tr><td>401</td><td>Unauthorized</td><td>Check credentials, re-authenticate</td></tr>
 <tr><td>403</td><td>Forbidden</td><td>Check capabilities/permissions</td></tr>
 <tr><td>404</td><td>Not Found</td><td>Skip resource, log warning</td></tr>
 <tr><td>429</td><td>Rate Limited</td><td>Apply backoff, retry</td></tr>
 <tr><td>500</td><td>Server Error</td><td>Retry with backoff</td></tr>
 <tr><td>503</td><td>Service Unavailable</td><td>Wait, retry</td></tr>
-<p>
+</tbody>
 </table>
-</p>
 <h3>10.2 Error Response Format</h3>
-
-<p>
-<strong><em>CODEBLOCK_19</em></strong>
-</p>
-
+<pre><code class="language-json">{
+  &quot;errors&quot;: [
+    {
+      &quot;timestamp&quot;: &quot;2025-12-03T10:32:15Z&quot;,
+      &quot;endpoint&quot;: &quot;/servicesNS/-/-/data/ui/views&quot;,
+      &quot;httpStatus&quot;: 403,
+      &quot;message&quot;: &quot;Capability &#039;admin_all_objects&#039; required&quot;,
+      &quot;severity&quot;: &quot;error&quot;,
+      &quot;impact&quot;: &quot;Dashboards will not be collected&quot;,
+      &quot;resolution&quot;: &quot;Grant &#039;admin_all_objects&#039; to the user/token&quot;
+    }
+  ],
+  &quot;warnings&quot;: [...],
+  &quot;skipped&quot;: [...]
+}</code></pre>
 <h3>10.3 Graceful Degradation</h3>
-
-<p>
-<strong><em>CODEBLOCK_20</em></strong>
-</p>
-
+<pre><code>┌─────────────────────────────────────────────────────────────┐
+│                   GRACEFUL DEGRADATION                       │
+├─────────────────────────────────────────────────────────────┤
+│                                                              │
+│  If endpoint fails:                                         │
+│  1. Log the error with details                              │
+│  2. Continue with other endpoints                           │
+│  3. Mark that data category as incomplete                   │
+│  4. Include error in summary report                         │
+│  5. Suggest resolution in final output                      │
+│                                                              │
+│  Never fail the entire export for a single endpoint error   │
+│                                                              │
+└─────────────────────────────────────────────────────────────┘</code></pre>
 <hr>
-
 <h2>11. Security Considerations</h2>
-
 <h3>11.1 Credential Handling</h3>
-
-<p>
-<strong><em>CODEBLOCK_21</em></strong>
-</p>
-
+<pre><code>┌─────────────────────────────────────────────────────────────┐
+│                   CREDENTIAL SECURITY                        │
+├─────────────────────────────────────────────────────────────┤
+│                                                              │
+│  DO:                                                        │
+│  ✓ Use API tokens instead of passwords when possible        │
+│  ✓ Clear credentials from memory after use                  │
+│  ✓ Use HTTPS for all API calls                             │
+│  ✓ Validate SSL certificates (warn if skipping)            │
+│                                                              │
+│  DO NOT:                                                    │
+│  ✗ Store credentials in the export file                    │
+│  ✗ Log credentials in any output                           │
+│  ✗ Pass credentials as command-line arguments               │
+│  ✗ Store credentials in environment variables permanently   │
+│                                                              │
+└─────────────────────────────────────────────────────────────┘</code></pre>
 <h3>11.2 Data Sensitivity</h3>
-
 <table>
 <thead>
-<tr><td>Data Type</td><td>Sensitivity</td><td>Handling</td></tr>
-<p>
-</table>___TABLE_SEP___
-</p>
-<table>
-<thead>
+<tr><th>Data Type</th><th>Sensitivity</th><th>Handling</th></tr>
+</thead>
+<tbody>
 <tr><td>API Token</td><td>Critical</td><td>Never stored, cleared after use</td></tr>
 <tr><td>Password</td><td>Critical</td><td>Never stored, cleared after use</td></tr>
 <tr><td>User emails</td><td>Medium</td><td>Collected, marked as PII</td></tr>
@@ -1120,35 +1127,55 @@ Splunk Cloud may enforce rate limits on REST API calls:
 <tr><td>Search queries</td><td>Medium</td><td>May contain sensitive terms</td></tr>
 <tr><td>Dashboard names</td><td>Low</td><td>Collected</td></tr>
 <tr><td>Index names</td><td>Low</td><td>Collected</td></tr>
-<p>
+</tbody>
 </table>
-</p>
 <h3>11.3 Network Security</h3>
+<pre><code class="language-bash"># Always use HTTPS
+URL=&quot;https://${STACK}.splunkcloud.com:8089&quot;
 
-<p>
-<strong><em>CODEBLOCK_22</em></strong>
-</p>
+# Verify SSL certificate (default)
+curl &quot;$URL/services/server/info&quot;
 
+# If custom CA or self-signed (warn user)
+curl -k &quot;$URL/services/server/info&quot;  # Not recommended</code></pre>
 <hr>
-
 <h2>Appendix A: Full API Collection Script Outline</h2>
+<pre><code class="language-bash">#!/bin/bash
+# dynabridge-splunk-cloud-export.sh
 
-<p>
-<strong><em>CODEBLOCK_23</em></strong>
-</p>
-
+# 1. Parse arguments and show banner
+# 2. Get stack URL from user
+# 3. Test connectivity
+# 4. Get authentication (token or user/pass)
+# 5. Test authentication and check capabilities
+# 6. Detect environment (version, type)
+# 7. List apps and let user select
+# 8. Select data categories
+# 9. Create output directory
+# 10. Collect data via REST API:
+#     - Server info
+#     - Apps
+#     - Configs (props, transforms, etc.)
+#     - Dashboards
+#     - Saved searches
+#     - Users and roles
+#     - Macros, eventtypes, tags
+#     - Index info
+#     - Usage analytics (via search)
+# 11. Generate summary
+# 12. Create archive
+# 13. Cleanup and display next steps</code></pre>
 <hr>
-
 <h2>Appendix B: jq Dependency Note</h2>
-
 <p>
-<strong>NOTE</strong>: <code>jq</code> is <strong>recommended</strong> (not required) for manifest.json generation in v3.5.1. The script will check for jq and display a warning if not installed, but will continue with fallback methods.
+<strong>NOTE</strong>: <code>jq</code> is <strong>recommended</strong> (not required) for manifest.json generation in v4.0.0. The script will check for jq and display a warning if not installed, but will continue with fallback methods.
 </p>
-
-<p>
-<strong><em>CODEBLOCK_24</em></strong>
-</p>
-
+<pre><code class="language-bash"># Check if jq is installed
+if ! command -v jq &amp;&gt; /dev/null; then
+    error &quot;jq is not installed - REQUIRED for manifest.json generation&quot;
+    echo &quot;Install with: apt-get install jq / yum install jq / brew install jq&quot;
+    exit 1
+fi</code></pre>
 <p>
 The script uses jq extensively for:
 </p>
@@ -1157,41 +1184,33 @@ The script uses jq extensively for:
 <li>Extracting usage intelligence data</li>
 <li>Generating and validating manifest.json</li>
 <li>Building the ownership mapping files</li>
-<p>
 </ul>
+<p>
 <strong>Installation</strong>:
 </p>
 <ul>
 <li>Ubuntu/Debian: <code>apt-get install jq</code></li>
 <li>RHEL/CentOS: <code>yum install jq</code></li>
 <li>macOS: <code>brew install jq</code></li>
-<p>
 </ul>
-</p>
 <hr>
-
 <p>
 <em>End of Splunk Cloud Export Script Technical Specification</em>
-<em>Version 3.5.1</em>
+<em>Version 4.0.0</em>
 </p>
-
     </main>
 
     <footer class="footer">
         <div class="footer-content">
-            <div class="footer-logo">
-                <span class="dyna">Dyna</span><span class="bridge">Bridge for Splunk</span>
-            </div>
-            <p>Comprehensive migration intelligence for Splunk to Dynatrace Gen3 Grail migrations</p>
+            <div class="footer-logo"><span class="highlight">Dyna</span>Bridge for Splunk</div>
+            <p>Migration intelligence for Splunk to Dynatrace Gen3 Grail</p>
             <div class="footer-links">
                 <a href="README-SPLUNK-ENTERPRISE.html">Enterprise Guide</a>
                 <a href="README-SPLUNK-CLOUD.html">Cloud Guide</a>
-                <a href="SCRIPT-GENERATED-ANALYTICS-REFERENCE.html">Analytics Reference</a>
-                <a href="EXPORT-SCHEMA.html">Schema Reference</a>
+                <a href="SCRIPT-GENERATED-ANALYTICS-REFERENCE.html">Analytics</a>
+                <a href="EXPORT-SCHEMA.html">Schema</a>
             </div>
-            <p class="footer-copyright">
-                &copy; 2025 DynaBridge Project &bull; Built for Dynatrace Gen3 Platform
-            </p>
+            <p class="footer-copyright">DynaBridge Project &bull; Built for Dynatrace Gen3 Platform</p>
         </div>
     </footer>
 </body>

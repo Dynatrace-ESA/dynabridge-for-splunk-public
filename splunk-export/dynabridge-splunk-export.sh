@@ -71,7 +71,7 @@ set -o pipefail  # Fail on pipe errors
 # SCRIPT CONFIGURATION
 # =============================================================================
 
-SCRIPT_VERSION="4.1.0"
+SCRIPT_VERSION="4.0.0"
 SCRIPT_NAME="DynaBridge Splunk Export"
 
 # ANSI color codes
@@ -140,6 +140,37 @@ USAGE_PERIOD="30d"
 API_DELAY_SECONDS=0.25     # Delay between API calls (seconds) - 250ms
 MAX_CONCURRENT_SEARCHES=1  # Don't run multiple searches in parallel
 SEARCH_POLL_INTERVAL=1     # How often to check if search is done (seconds)
+
+# =============================================================================
+# PHASE 1: ENTERPRISE RESILIENCE CONFIGURATION
+# =============================================================================
+# These settings enable enterprise-scale exports (4000+ dashboards, 10K+ alerts)
+# Override via environment variables: BATCH_SIZE=50 ./dynabridge-splunk-export.sh
+
+# Pagination settings
+BATCH_SIZE=${BATCH_SIZE:-100}              # Items per API request
+RATE_LIMIT_DELAY=${RATE_LIMIT_DELAY:-0.1}  # Delay between paginated requests (100ms - polite but fast)
+
+# Timeout settings - GENEROUS defaults for enterprise environments
+API_TIMEOUT=${API_TIMEOUT:-120}            # Per-request timeout (2 min - handles large result sets)
+CONNECT_TIMEOUT=${CONNECT_TIMEOUT:-10}     # Connection timeout in seconds
+MAX_TOTAL_TIME=${MAX_TOTAL_TIME:-14400}    # Maximum total script runtime (4 hours for 5000+ assets)
+
+# Retry settings
+MAX_RETRIES=${MAX_RETRIES:-3}              # Number of retry attempts for failed requests
+RETRY_DELAY=${RETRY_DELAY:-2}              # Initial retry delay in seconds (exponential backoff)
+
+# Progress & Resume settings
+CHECKPOINT_ENABLED=${CHECKPOINT_ENABLED:-true}   # Enable checkpoint/resume capability
+PROGRESS_FILE=""                                  # Set at runtime: .export_progress
+CHECKPOINT_FILE=""                                # Set at runtime: .export_checkpoint
+ERROR_LOG_FILE=""                                 # Set at runtime: export_errors.log
+
+# Statistics for resilience tracking
+STATS_API_CALLS=0
+STATS_API_RETRIES=0
+STATS_API_FAILURES=0
+STATS_BATCHES_COMPLETED=0
 
 # Anonymization mappings (populated at runtime)
 declare -A EMAIL_MAP
@@ -1056,6 +1087,847 @@ prompt_password() {
 # Check if command exists
 command_exists() {
   command -v "$1" &> /dev/null
+}
+
+# =============================================================================
+# PHASE 1: ENTERPRISE RESILIENCE FUNCTIONS
+# =============================================================================
+# These functions provide retry logic, pagination, timeouts, and progress
+# tracking for enterprise-scale exports (4000+ dashboards, 10K+ alerts)
+
+# Initialize resilience tracking files
+# Usage: init_resilience_tracking
+init_resilience_tracking() {
+  if [ -z "$EXPORT_DIR" ]; then
+    return 1
+  fi
+
+  PROGRESS_FILE="$EXPORT_DIR/.export_progress"
+  CHECKPOINT_FILE="$EXPORT_DIR/.export_checkpoint"
+  ERROR_LOG_FILE="$EXPORT_DIR/export_errors.log"
+
+  # Initialize progress file
+  cat > "$PROGRESS_FILE" << EOF
+{
+  "started_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "server": "$SPLUNK_HOST",
+  "status": "in_progress",
+  "phase1_resilience": true,
+  "config": {
+    "batch_size": $BATCH_SIZE,
+    "max_retries": $MAX_RETRIES,
+    "api_timeout": $API_TIMEOUT
+  },
+  "dashboards": {"total": 0, "exported": 0, "failed": 0},
+  "alerts": {"total": 0, "exported": 0, "failed": 0},
+  "searches": {"total": 0, "exported": 0, "failed": 0}
+}
+EOF
+
+  # Initialize error log
+  echo "# DynaBridge Export Error Log" > "$ERROR_LOG_FILE"
+  echo "# Started: $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$ERROR_LOG_FILE"
+  echo "# Server: $SPLUNK_HOST" >> "$ERROR_LOG_FILE"
+  echo "# ============================================" >> "$ERROR_LOG_FILE"
+
+  log "Resilience tracking initialized"
+}
+
+# Update progress file
+# Usage: update_progress "dashboards" "exported" 50
+update_progress() {
+  local category="$1"
+  local field="$2"
+  local value="$3"
+
+  if [ -z "$PROGRESS_FILE" ] || [ ! -f "$PROGRESS_FILE" ]; then
+    return
+  fi
+
+  $PYTHON_CMD -c "
+import json
+try:
+    with open('$PROGRESS_FILE', 'r') as f:
+        data = json.load(f)
+    if '$category' in data:
+        data['$category']['$field'] = $value
+    data['last_updated'] = '$(date -u +%Y-%m-%dT%H:%M:%SZ)'
+    with open('$PROGRESS_FILE', 'w') as f:
+        json.dump(data, f, indent=2)
+except Exception as e:
+    pass
+" 2>/dev/null
+}
+
+# Log error to error log file
+# Usage: log_error "dashboards" "my_dashboard" "Connection timeout after 60s"
+log_error() {
+  local category="$1"
+  local item="$2"
+  local error="$3"
+
+  if [ -n "$ERROR_LOG_FILE" ] && [ -f "$ERROR_LOG_FILE" ]; then
+    echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] [$category] $item: $error" >> "$ERROR_LOG_FILE"
+  fi
+
+  ((STATS_API_FAILURES++))
+}
+
+# Save checkpoint for resume capability
+# Usage: save_checkpoint "dashboards" 500 "last_dashboard_name"
+save_checkpoint() {
+  local category="$1"
+  local last_offset="$2"
+  local last_item="$3"
+
+  if [ "$CHECKPOINT_ENABLED" != "true" ] || [ -z "$CHECKPOINT_FILE" ]; then
+    return
+  fi
+
+  cat > "$CHECKPOINT_FILE" << EOF
+{
+  "category": "$category",
+  "last_offset": $last_offset,
+  "last_item": "$last_item",
+  "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+}
+EOF
+
+  log "Checkpoint saved: $category at offset $last_offset"
+}
+
+# Load checkpoint if exists
+# Usage: if load_checkpoint; then RESUME_OFFSET=$LOADED_OFFSET; fi
+# Sets: LOADED_CATEGORY, LOADED_OFFSET, LOADED_ITEM
+load_checkpoint() {
+  LOADED_CATEGORY=""
+  LOADED_OFFSET=0
+  LOADED_ITEM=""
+
+  if [ "$CHECKPOINT_ENABLED" != "true" ] || [ -z "$CHECKPOINT_FILE" ] || [ ! -f "$CHECKPOINT_FILE" ]; then
+    return 1
+  fi
+
+  LOADED_CATEGORY=$(json_get "$CHECKPOINT_FILE" ".category" "")
+  LOADED_OFFSET=$(json_get "$CHECKPOINT_FILE" ".last_offset" "0")
+  LOADED_ITEM=$(json_get "$CHECKPOINT_FILE" ".last_item" "")
+
+  if [ -n "$LOADED_CATEGORY" ] && [ "$LOADED_OFFSET" -gt 0 ]; then
+    return 0
+  fi
+
+  return 1
+}
+
+# Clear checkpoint after successful completion
+# Usage: clear_checkpoint
+clear_checkpoint() {
+  if [ -n "$CHECKPOINT_FILE" ] && [ -f "$CHECKPOINT_FILE" ]; then
+    rm -f "$CHECKPOINT_FILE"
+    log "Checkpoint cleared"
+  fi
+}
+
+# Splunk API call with retry logic and timeout
+# Usage: splunk_api_call "endpoint" "output_file" [extra_curl_args...]
+# Returns: 0 on success, 1 on failure
+# Example: splunk_api_call "/servicesNS/-/-/data/ui/views" "$output_file" "-d count=100"
+splunk_api_call() {
+  local endpoint="$1"
+  local output_file="$2"
+  shift 2
+  local extra_args=("$@")
+
+  local url="https://${SPLUNK_HOST}:${SPLUNK_PORT}${endpoint}"
+  local attempt=1
+  local delay=$RETRY_DELAY
+  local http_code=""
+  local success=false
+
+  ((STATS_API_CALLS++))
+
+  while [ $attempt -le $MAX_RETRIES ]; do
+    # Make the API call with timeout
+    http_code=$(curl -k -s -w "%{http_code}" \
+      --connect-timeout "$CONNECT_TIMEOUT" \
+      --max-time "$API_TIMEOUT" \
+      -u "${SPLUNK_USER}:${SPLUNK_PASSWORD}" \
+      -H "Accept: application/json" \
+      -o "$output_file" \
+      "${extra_args[@]}" \
+      "$url" 2>/dev/null)
+
+    case "$http_code" in
+      200)
+        success=true
+        break
+        ;;
+      429)
+        # Rate limited - exponential backoff
+        log "Rate limited (429). Waiting ${delay}s before retry $attempt/$MAX_RETRIES"
+        ((STATS_API_RETRIES++))
+        sleep "$delay"
+        delay=$((delay * 2))
+        ;;
+      500|502|503|504)
+        # Server error - retry with backoff
+        log "Server error ($http_code). Retry $attempt/$MAX_RETRIES in ${delay}s"
+        ((STATS_API_RETRIES++))
+        sleep "$delay"
+        delay=$((delay * 2))
+        ;;
+      401|403)
+        # Auth error - don't retry
+        log_error "api" "$endpoint" "Authentication error ($http_code)"
+        return 1
+        ;;
+      000)
+        # Timeout or connection error
+        log "Timeout/connection error. Retry $attempt/$MAX_RETRIES in ${delay}s"
+        ((STATS_API_RETRIES++))
+        sleep "$delay"
+        delay=$((delay * 2))
+        ;;
+      *)
+        # Other error
+        log "Unexpected error ($http_code). Retry $attempt/$MAX_RETRIES"
+        ((STATS_API_RETRIES++))
+        sleep "$delay"
+        delay=$((delay * 2))
+        ;;
+    esac
+
+    ((attempt++))
+  done
+
+  if [ "$success" = true ]; then
+    return 0
+  else
+    log_error "api" "$endpoint" "Failed after $MAX_RETRIES attempts (last code: $http_code)"
+    return 1
+  fi
+}
+
+# Get total count from Splunk API endpoint (for pagination)
+# Usage: total=$(splunk_api_get_count "/servicesNS/-/-/data/ui/views")
+splunk_api_get_count() {
+  local endpoint="$1"
+  local temp_file=$(mktemp)
+
+  # Request with count=0 to get total without fetching all data
+  if splunk_api_call "$endpoint" "$temp_file" "-G" "-d" "output_mode=json" "-d" "count=1"; then
+    local total=$($PYTHON_CMD -c "
+import json
+try:
+    with open('$temp_file', 'r') as f:
+        data = json.load(f)
+    # Try paging.total first, then entry count
+    total = data.get('paging', {}).get('total', 0)
+    if total == 0:
+        total = len(data.get('entry', []))
+    print(total)
+except:
+    print(0)
+" 2>/dev/null)
+    rm -f "$temp_file"
+    echo "$total"
+  else
+    rm -f "$temp_file"
+    echo "0"
+  fi
+}
+
+# Paginated API call - fetches all results in batches
+# Usage: splunk_api_call_paginated "/servicesNS/-/-/data/ui/views" "$output_dir" "dashboards"
+# Creates: $output_dir/dashboards_batch_0.json, dashboards_batch_100.json, etc.
+# Returns: Total count fetched
+splunk_api_call_paginated() {
+  local endpoint="$1"
+  local output_dir="$2"
+  local prefix="$3"
+  local start_offset="${4:-0}"
+
+  local offset=$start_offset
+  local total_fetched=0
+  local batch_num=0
+  local empty_batches=0
+  local max_empty=3  # Stop after 3 consecutive empty batches
+
+  # First, get total count for progress tracking
+  local total_count=$(splunk_api_get_count "$endpoint")
+
+  if [ "$total_count" -eq 0 ]; then
+    log "No items found at $endpoint"
+    echo "0"
+    return
+  fi
+
+  log "Starting paginated export: $total_count items at $endpoint"
+
+  # Show scale warning for very large exports
+  if [ "$total_count" -gt 1000 ]; then
+    show_scale_warning "${prefix}" "$total_count" 1000
+  fi
+
+  # Initialize progress
+  progress_init "Exporting ${prefix} (paginated)" "$total_count"
+
+  while [ $offset -lt $total_count ] && [ $empty_batches -lt $max_empty ]; do
+    local batch_file="$output_dir/${prefix}_batch_${offset}.json"
+
+    # Save checkpoint before each batch
+    save_checkpoint "$prefix" "$offset" "batch_$batch_num"
+
+    # Fetch batch with retry
+    if splunk_api_call "$endpoint" "$batch_file" "-G" \
+        "-d" "output_mode=json" \
+        "-d" "count=$BATCH_SIZE" \
+        "-d" "offset=$offset"; then
+
+      # Verify we got results
+      local batch_count=$($PYTHON_CMD -c "
+import json
+try:
+    with open('$batch_file', 'r') as f:
+        data = json.load(f)
+    print(len(data.get('entry', [])))
+except:
+    print(0)
+" 2>/dev/null)
+
+      if [ "$batch_count" -eq 0 ]; then
+        ((empty_batches++))
+        log "Empty batch at offset $offset ($empty_batches consecutive)"
+      else
+        empty_batches=0
+        total_fetched=$((total_fetched + batch_count))
+        ((STATS_BATCHES_COMPLETED++))
+      fi
+    else
+      log_error "$prefix" "batch_$offset" "Failed to fetch batch"
+      ((empty_batches++))
+    fi
+
+    offset=$((offset + BATCH_SIZE))
+    ((batch_num++))
+
+    # Update progress
+    progress_update "$total_fetched"
+
+    # Rate limiting between batches
+    sleep "$RATE_LIMIT_DELAY"
+  done
+
+  # Complete progress
+  progress_complete
+
+  # Clear checkpoint on success
+  if [ $total_fetched -gt 0 ]; then
+    clear_checkpoint
+  fi
+
+  log "Paginated export complete: $total_fetched items fetched"
+  echo "$total_fetched"
+}
+
+# Merge paginated batch files into single JSON
+# Usage: merge_paginated_batches "$output_dir" "dashboards" "$final_output.json"
+merge_paginated_batches() {
+  local output_dir="$1"
+  local prefix="$2"
+  local final_file="$3"
+
+  $PYTHON_CMD -c "
+import json
+import glob
+import os
+
+output_dir = '$output_dir'
+prefix = '$prefix'
+final_file = '$final_file'
+
+merged = {'entry': []}
+
+# Find and sort batch files
+batch_files = sorted(glob.glob(os.path.join(output_dir, f'{prefix}_batch_*.json')))
+
+for batch_file in batch_files:
+    try:
+        with open(batch_file, 'r') as f:
+            data = json.load(f)
+        entries = data.get('entry', [])
+        merged['entry'].extend(entries)
+    except Exception as e:
+        print(f'Warning: Could not process {batch_file}: {e}')
+
+# Add metadata
+merged['paging'] = {
+    'total': len(merged['entry']),
+    'merged_from_batches': len(batch_files)
+}
+
+# Write merged file
+with open(final_file, 'w') as f:
+    json.dump(merged, f, indent=2)
+
+print(f'Merged {len(merged[\"entry\"])} entries from {len(batch_files)} batches')
+" 2>/dev/null
+
+  log "Merged paginated batches into $final_file"
+}
+
+# Finalize export progress file
+# Usage: finalize_progress "completed"
+finalize_progress() {
+  local status="${1:-completed}"
+
+  if [ -z "$PROGRESS_FILE" ] || [ ! -f "$PROGRESS_FILE" ]; then
+    return
+  fi
+
+  $PYTHON_CMD -c "
+import json
+try:
+    with open('$PROGRESS_FILE', 'r') as f:
+        data = json.load(f)
+    data['status'] = '$status'
+    data['completed_at'] = '$(date -u +%Y-%m-%dT%H:%M:%SZ)'
+    data['statistics'] = {
+        'api_calls': $STATS_API_CALLS,
+        'api_retries': $STATS_API_RETRIES,
+        'api_failures': $STATS_API_FAILURES,
+        'batches_completed': $STATS_BATCHES_COMPLETED
+    }
+    with open('$PROGRESS_FILE', 'w') as f:
+        json.dump(data, f, indent=2)
+except Exception as e:
+    pass
+" 2>/dev/null
+}
+
+# Check for previous incomplete export and offer resume
+# Usage: check_resume_export
+check_resume_export() {
+  if [ "$CHECKPOINT_ENABLED" != "true" ]; then
+    return 1
+  fi
+
+  if load_checkpoint; then
+    echo ""
+    echo -e "${YELLOW}╔══════════════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${YELLOW}║${NC}  ${WHITE}⚠  PREVIOUS EXPORT DETECTED${NC}                                        ${YELLOW}║${NC}"
+    echo -e "${YELLOW}╠══════════════════════════════════════════════════════════════════════╣${NC}"
+    echo -e "${YELLOW}║${NC}  Found checkpoint from previous export:                                ${YELLOW}║${NC}"
+    echo -e "${YELLOW}║${NC}    Category: ${WHITE}$LOADED_CATEGORY${NC}                                              ${YELLOW}║${NC}"
+    echo -e "${YELLOW}║${NC}    Offset:   ${WHITE}$LOADED_OFFSET${NC}                                                 ${YELLOW}║${NC}"
+    echo -e "${YELLOW}╚══════════════════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+
+    if prompt_yn "Resume from last checkpoint?"; then
+      return 0  # Resume
+    else
+      clear_checkpoint
+      return 1  # Start fresh
+    fi
+  fi
+
+  return 1
+}
+
+# =============================================================================
+# PHASE 2: ENTERPRISE FEATURES - SHC DETECTION & EXPORT SCOPE
+# =============================================================================
+# Detect Search Head Cluster role and offer appropriate options for large envs
+
+# Detect if running on SHC Captain, Member, or standalone
+# Sets: DETECTED_SHC_ROLE (captain, member, standalone)
+# Sets: SHC_MEMBER_COUNT (number of cluster members)
+detect_shc_role() {
+  DETECTED_SHC_ROLE="standalone"
+  SHC_MEMBER_COUNT=0
+
+  if [ -z "$SPLUNK_USER" ]; then
+    return  # Can't detect without API access
+  fi
+
+  local temp_file=$(mktemp)
+
+  # Try to get SHC member info
+  if curl -k -s --connect-timeout "$CONNECT_TIMEOUT" --max-time "$API_TIMEOUT" \
+      -u "${SPLUNK_USER}:${SPLUNK_PASSWORD}" \
+      "https://${SPLUNK_HOST}:${SPLUNK_PORT}/services/shcluster/member/info?output_mode=json" \
+      -o "$temp_file" 2>/dev/null; then
+
+    # Check if this is an SHC member
+    if grep -q '"is_registered"' "$temp_file" 2>/dev/null; then
+      local is_registered=$($PYTHON_CMD -c "
+import json
+try:
+    with open('$temp_file', 'r') as f:
+        data = json.load(f)
+    entry = data.get('entry', [{}])[0].get('content', {})
+    print('true' if entry.get('is_registered', False) else 'false')
+except:
+    print('false')
+" 2>/dev/null)
+
+      if [ "$is_registered" = "true" ]; then
+        # Check if captain or member
+        local status=$($PYTHON_CMD -c "
+import json
+try:
+    with open('$temp_file', 'r') as f:
+        data = json.load(f)
+    entry = data.get('entry', [{}])[0].get('content', {})
+    print(entry.get('status', 'Unknown'))
+except:
+    print('Unknown')
+" 2>/dev/null)
+
+        if [ "$status" = "Captain" ]; then
+          DETECTED_SHC_ROLE="captain"
+          IS_SHC_CAPTAIN=true
+        else
+          DETECTED_SHC_ROLE="member"
+        fi
+        IS_SHC_MEMBER=true
+      fi
+    fi
+  fi
+
+  # If SHC detected, get member count
+  if [ "$IS_SHC_MEMBER" = true ]; then
+    if curl -k -s --connect-timeout "$CONNECT_TIMEOUT" --max-time "$API_TIMEOUT" \
+        -u "${SPLUNK_USER}:${SPLUNK_PASSWORD}" \
+        "https://${SPLUNK_HOST}:${SPLUNK_PORT}/services/shcluster/member/members?output_mode=json" \
+        -o "$temp_file" 2>/dev/null; then
+
+      SHC_MEMBER_COUNT=$($PYTHON_CMD -c "
+import json
+try:
+    with open('$temp_file', 'r') as f:
+        data = json.load(f)
+    print(len(data.get('entry', [])))
+except:
+    print(0)
+" 2>/dev/null)
+    fi
+  fi
+
+  rm -f "$temp_file"
+
+  log "SHC Detection: role=$DETECTED_SHC_ROLE, members=$SHC_MEMBER_COUNT"
+}
+
+# Show SHC warning and options if running on Captain
+# Returns: 0 to continue, 1 to exit
+show_shc_captain_warning() {
+  if [ "$DETECTED_SHC_ROLE" != "captain" ]; then
+    return 0
+  fi
+
+  echo ""
+  echo -e "${YELLOW}╔══════════════════════════════════════════════════════════════════════════════╗${NC}"
+  echo -e "${YELLOW}║${NC}  ${WHITE}⚠  SEARCH HEAD CLUSTER CAPTAIN DETECTED${NC}                                     ${YELLOW}║${NC}"
+  echo -e "${YELLOW}╠══════════════════════════════════════════════════════════════════════════════╣${NC}"
+  echo -e "${YELLOW}║${NC}                                                                                ${YELLOW}║${NC}"
+  echo -e "${YELLOW}║${NC}  You are running this script on the ${WHITE}Search Head Cluster Captain${NC}.           ${YELLOW}║${NC}"
+  echo -e "${YELLOW}║${NC}  Cluster members: ${WHITE}${SHC_MEMBER_COUNT}${NC}                                                          ${YELLOW}║${NC}"
+  echo -e "${YELLOW}║${NC}                                                                                ${YELLOW}║${NC}"
+  echo -e "${YELLOW}║${NC}  ${RED}WARNING:${NC} Exporting from the Captain may cause:                               ${YELLOW}║${NC}"
+  echo -e "${YELLOW}║${NC}    • REST API timeouts due to cluster coordination overhead                   ${YELLOW}║${NC}"
+  echo -e "${YELLOW}║${NC}    • Slower response times for large datasets (4000+ dashboards)              ${YELLOW}║${NC}"
+  echo -e "${YELLOW}║${NC}    • Potential impact on cluster operations                                   ${YELLOW}║${NC}"
+  echo -e "${YELLOW}║${NC}                                                                                ${YELLOW}║${NC}"
+  echo -e "${YELLOW}║${NC}  ${GREEN}RECOMMENDATION:${NC} Run this script from:                                        ${YELLOW}║${NC}"
+  echo -e "${YELLOW}║${NC}    • A Search Head ${WHITE}member${NC} (not captain)                                       ${YELLOW}║${NC}"
+  echo -e "${YELLOW}║${NC}    • The ${WHITE}Deployment Server${NC}                                                    ${YELLOW}║${NC}"
+  echo -e "${YELLOW}║${NC}    • A ${WHITE}standalone search head${NC} with access to configs                         ${YELLOW}║${NC}"
+  echo -e "${YELLOW}║${NC}                                                                                ${YELLOW}║${NC}"
+  echo -e "${YELLOW}╠══════════════════════════════════════════════════════════════════════════════╣${NC}"
+  echo -e "${YELLOW}║${NC}  Choose an option:                                                             ${YELLOW}║${NC}"
+  echo -e "${YELLOW}║${NC}                                                                                ${YELLOW}║${NC}"
+  echo -e "${YELLOW}║${NC}    ${WHITE}[1]${NC} Continue anyway (use smaller batch size: ${BATCH_SIZE})                     ${YELLOW}║${NC}"
+  echo -e "${YELLOW}║${NC}    ${WHITE}[2]${NC} Continue with reduced batch size (${WHITE}25${NC} items per request)              ${YELLOW}║${NC}"
+  echo -e "${YELLOW}║${NC}    ${WHITE}[3]${NC} Export local configs only (skip REST API calls)                        ${YELLOW}║${NC}"
+  echo -e "${YELLOW}║${NC}    ${WHITE}[4]${NC} Exit and run from different server                                     ${YELLOW}║${NC}"
+  echo -e "${YELLOW}║${NC}                                                                                ${YELLOW}║${NC}"
+  echo -e "${YELLOW}╚══════════════════════════════════════════════════════════════════════════════╝${NC}"
+  echo ""
+
+  local choice
+  read -p "Enter choice [1-4]: " choice
+
+  case "$choice" in
+    1)
+      info "Continuing with current settings (batch size: $BATCH_SIZE)"
+      return 0
+      ;;
+    2)
+      BATCH_SIZE=25
+      API_TIMEOUT=120
+      RATE_LIMIT_DELAY=1.0
+      info "Reduced batch size to 25, increased timeout to 120s, rate limit to 1s"
+      return 0
+      ;;
+    3)
+      COLLECT_USAGE=false
+      info "Skipping REST API usage analytics (local configs only)"
+      return 0
+      ;;
+    4)
+      echo ""
+      echo -e "${YELLOW}Export cancelled. Run the script from an SHC member or deployment server.${NC}"
+      exit 0
+      ;;
+    *)
+      info "Invalid choice. Continuing with default settings."
+      return 0
+      ;;
+  esac
+}
+
+# Show export scope selection for large environments
+# Usage: select_export_scope
+select_export_scope() {
+  # Only show for large environments or if user requested
+  local show_scope_menu=false
+
+  # Get quick count estimates
+  local dashboard_count=0
+  local alert_count=0
+
+  if [ -n "$SPLUNK_USER" ]; then
+    dashboard_count=$(splunk_api_get_count "/servicesNS/-/-/data/ui/views")
+    alert_count=$(splunk_api_get_count "/servicesNS/-/-/saved/searches")
+  fi
+
+  # Show scope menu for large environments
+  if [ "$dashboard_count" -gt 500 ] || [ "$alert_count" -gt 2000 ]; then
+    show_scope_menu=true
+  fi
+
+  if [ "$show_scope_menu" = false ]; then
+    return 0
+  fi
+
+  echo ""
+  echo -e "${CYAN}╔══════════════════════════════════════════════════════════════════════════════╗${NC}"
+  echo -e "${CYAN}║${NC}  ${WHITE}LARGE ENVIRONMENT DETECTED${NC}                                                   ${CYAN}║${NC}"
+  echo -e "${CYAN}╠══════════════════════════════════════════════════════════════════════════════╣${NC}"
+  echo -e "${CYAN}║${NC}                                                                                ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}  Detected: ${WHITE}${dashboard_count}${NC} dashboards, ${WHITE}${alert_count}${NC} saved searches/alerts                  ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}                                                                                ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}  Choose export scope to optimize for your needs:                               ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}                                                                                ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}    ${WHITE}[1]${NC} Full export (all dashboards, alerts, configs) ${GREEN}[Recommended]${NC}           ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}    ${WHITE}[2]${NC} Dashboards only (skip alerts/saved searches)                            ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}    ${WHITE}[3]${NC} Alerts only (skip dashboards)                                           ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}    ${WHITE}[4]${NC} Configs only (skip usage analytics, faster export)                      ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}                                                                                ${CYAN}║${NC}"
+  echo -e "${CYAN}╚══════════════════════════════════════════════════════════════════════════════╝${NC}"
+  echo ""
+
+  local choice
+  read -p "Enter choice [1-4] (default: 1): " choice
+  choice=${choice:-1}
+
+  case "$choice" in
+    1)
+      info "Full export selected"
+      ;;
+    2)
+      COLLECT_ALERTS=false
+      info "Dashboards only - alerts/saved searches will be skipped"
+      ;;
+    3)
+      COLLECT_DASHBOARDS=false
+      info "Alerts only - dashboards will be skipped"
+      ;;
+    4)
+      COLLECT_USAGE=false
+      COLLECT_AUDIT=false
+      info "Configs only - usage analytics skipped for faster export"
+      ;;
+    *)
+      info "Full export selected (default)"
+      ;;
+  esac
+
+  echo ""
+}
+
+# =============================================================================
+# PHASE 3: ADVANCED OPTIMIZATION
+# =============================================================================
+# Smart timeouts, memory-efficient processing, and parallel capabilities
+
+# Calculate appropriate timeout based on expected data volume
+# Usage: timeout=$(calculate_smart_timeout 5000 "dashboards")
+calculate_smart_timeout() {
+  local item_count="${1:-0}"
+  local item_type="${2:-items}"
+
+  # Base timeout: 30 seconds minimum
+  local base_timeout=30
+
+  # Per-item timeout factors (some operations are slower than others)
+  local per_item_factor
+  case "$item_type" in
+    dashboards)
+      per_item_factor=0.1   # 0.1s per dashboard
+      ;;
+    alerts|searches)
+      per_item_factor=0.05  # 0.05s per alert (simpler)
+      ;;
+    users|rbac)
+      per_item_factor=0.02  # Very fast
+      ;;
+    *)
+      per_item_factor=0.1   # Default
+      ;;
+  esac
+
+  # Calculate: base + (count * factor)
+  # Use Python for floating point math
+  local calculated=$($PYTHON_CMD -c "
+import math
+base = $base_timeout
+count = $item_count
+factor = $per_item_factor
+result = int(math.ceil(base + (count * factor)))
+# Cap at 10 minutes max
+print(min(result, 600))
+" 2>/dev/null)
+
+  # Fallback if Python fails
+  if [ -z "$calculated" ] || [ "$calculated" -eq 0 ]; then
+    calculated=$API_TIMEOUT
+  fi
+
+  log "Smart timeout for $item_count $item_type: ${calculated}s"
+  echo "$calculated"
+}
+
+# Memory-efficient batch merging using streaming
+# For very large exports (10K+ items), avoids loading entire JSON into memory
+# Usage: merge_batches_streaming "$batch_dir" "dashboards" "$output.json"
+merge_batches_streaming() {
+  local batch_dir="$1"
+  local prefix="$2"
+  local output_file="$3"
+
+  $PYTHON_CMD << PYEOF
+import json
+import os
+import glob
+
+batch_dir = '$batch_dir'
+prefix = '$prefix'
+output_file = '$output_file'
+
+# Find all batch files
+batch_files = sorted(glob.glob(os.path.join(batch_dir, f'{prefix}_batch_*.json')))
+
+if not batch_files:
+    # No batches found, create empty result
+    with open(output_file, 'w') as f:
+        json.dump({'entry': [], 'paging': {'total': 0}}, f)
+    print('0')
+    exit(0)
+
+# Stream write to avoid memory issues
+total_count = 0
+with open(output_file, 'w') as out:
+    out.write('{"entry": [')
+
+    first_entry = True
+    for batch_file in batch_files:
+        try:
+            with open(batch_file, 'r') as f:
+                data = json.load(f)
+
+            entries = data.get('entry', [])
+            for entry in entries:
+                if not first_entry:
+                    out.write(',')
+                out.write(json.dumps(entry))
+                first_entry = False
+                total_count += 1
+
+        except Exception as e:
+            # Log error but continue with other batches
+            print(f'Warning: Error processing {batch_file}: {e}', file=__import__('sys').stderr)
+            continue
+
+    out.write('], "paging": {"total": ' + str(total_count) + ', "merged_from_batches": ' + str(len(batch_files)) + '}}')
+
+print(total_count)
+PYEOF
+}
+
+# Cleanup batch files after successful merge
+# Usage: cleanup_batch_files "$batch_dir" "dashboards"
+cleanup_batch_files() {
+  local batch_dir="$1"
+  local prefix="$2"
+
+  local batch_files=$(ls -1 "$batch_dir/${prefix}_batch_"*.json 2>/dev/null | wc -l | tr -d ' ')
+
+  if [ "$batch_files" -gt 0 ]; then
+    rm -f "$batch_dir/${prefix}_batch_"*.json
+    log "Cleaned up $batch_files batch files for $prefix"
+  fi
+}
+
+# Show export timing statistics
+# Usage: show_export_timing_stats
+show_export_timing_stats() {
+  local end_time=$(date +%s)
+  local total_seconds=$((end_time - EXPORT_START_TIME))
+
+  # Format duration
+  local hours=$((total_seconds / 3600))
+  local minutes=$(((total_seconds % 3600) / 60))
+  local seconds=$((total_seconds % 60))
+
+  local duration_str=""
+  if [ $hours -gt 0 ]; then
+    duration_str="${hours}h ${minutes}m ${seconds}s"
+  elif [ $minutes -gt 0 ]; then
+    duration_str="${minutes}m ${seconds}s"
+  else
+    duration_str="${seconds}s"
+  fi
+
+  echo ""
+  echo -e "${CYAN}╔══════════════════════════════════════════════════════════════════════════════╗${NC}"
+  echo -e "${CYAN}║${NC}  ${WHITE}EXPORT STATISTICS${NC}                                                            ${CYAN}║${NC}"
+  echo -e "${CYAN}╠══════════════════════════════════════════════════════════════════════════════╣${NC}"
+  echo -e "${CYAN}║${NC}                                                                                ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}  ${GREEN}Total Duration:${NC}  ${WHITE}${duration_str}${NC}                                                  ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}                                                                                ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}  ${GREEN}API Statistics:${NC}                                                              ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}    • Total API Calls:     ${WHITE}${STATS_API_CALLS}${NC}                                            ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}    • Retried Requests:    ${WHITE}${STATS_API_RETRIES}${NC}                                            ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}    • Failed Requests:     ${WHITE}${STATS_API_FAILURES}${NC}                                            ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}    • Batches Completed:   ${WHITE}${STATS_BATCHES_COMPLETED}${NC}                                            ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}                                                                                ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}  ${GREEN}Content Exported:${NC}                                                            ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}    • Applications:        ${WHITE}${STATS_APPS}${NC}                                                 ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}    • Dashboards:          ${WHITE}${STATS_DASHBOARDS}${NC}                                                 ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}    • Alerts:              ${WHITE}${STATS_ALERTS}${NC}                                                 ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}    • Users:               ${WHITE}${STATS_USERS}${NC}                                                 ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}    • Indexes:             ${WHITE}${STATS_INDEXES}${NC}                                                 ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}                                                                                ${CYAN}║${NC}"
+
+  if [ "$STATS_ERRORS" -gt 0 ]; then
+    echo -e "${CYAN}║${NC}  ${YELLOW}⚠ Errors:${NC}                ${WHITE}${STATS_ERRORS}${NC}                                                ${CYAN}║${NC}"
+    echo -e "${CYAN}║${NC}    See export_errors.log for details                                          ${CYAN}║${NC}"
+    echo -e "${CYAN}║${NC}                                                                                ${CYAN}║${NC}"
+  fi
+
+  echo -e "${CYAN}╚══════════════════════════════════════════════════════════════════════════════╝${NC}"
 }
 
 # =============================================================================
@@ -2196,6 +3068,10 @@ create_export_directory() {
   log "Script Version: $SCRIPT_VERSION"
   log "Export Directory: $EXPORT_DIR"
 
+  # Initialize Phase 1 resilience tracking
+  init_resilience_tracking
+  log "Resilience config: BATCH_SIZE=$BATCH_SIZE, MAX_RETRIES=$MAX_RETRIES, API_TIMEOUT=${API_TIMEOUT}s"
+
   success "Export directory created"
   echo ""
 }
@@ -2695,6 +3571,7 @@ collect_usage_analytics() {
   fi
 
   # Define collection tasks for progress tracking
+  # IMPORTANT: This array must match the actual number of sections in this function
   local tasks=(
     "dashboard_views:Dashboard view statistics"
     "user_activity:User activity metrics"
@@ -2702,6 +3579,10 @@ collect_usage_analytics() {
     "search_patterns:Search usage patterns"
     "data_source_usage:Data source consumption"
     "daily_volume:Daily volume analysis"
+    "ingestion_infra:Ingestion infrastructure"
+    "ownership:Ownership mapping"
+    "alert_migration:Alert migration data"
+    "user_role_mapping:User/role mapping"
     "saved_searches:Saved search metadata"
     "scheduler_status:Scheduler execution stats"
   )
@@ -2717,7 +3598,7 @@ collect_usage_analytics() {
     local search_query="$1"
     local output_file="$2"
     local description="$3"
-    local max_wait="${4:-120}"  # Default 120 seconds, configurable
+    local max_wait="${4:-300}"  # Default 5 minutes - enterprise searches can be slow
 
     # Rate limiting: pause before making API call
     log "Rate limit: waiting ${API_DELAY_SECONDS}s before search..."
@@ -4460,10 +5341,19 @@ ANON_EOF
 # =============================================================================
 
 create_archive() {
+  # Finalize resilience tracking before archive creation
+  finalize_progress "completed"
+
+  # Phase 3: Show export timing statistics
+  show_export_timing_stats >&2
+
   # All status messages go to stderr so only the tarball path goes to stdout
   print_info_box "STEP 8: CREATING ARCHIVE" \
     "" \
     "${WHITE}Compressing all collected data into a single archive...${NC}" >&2
+
+  # Log Phase 1 resilience statistics
+  log "Resilience stats: API calls=$STATS_API_CALLS, retries=$STATS_API_RETRIES, failures=$STATS_API_FAILURES, batches=$STATS_BATCHES_COMPLETED"
 
   echo "" >&2
   progress "Creating compressed archive..." >&2
@@ -4546,6 +5436,18 @@ TROUBLESHOOT_HEADER
 ## Error Summary
 
 **Total Errors:** ${STATS_ERRORS}
+
+## Phase 1 Resilience Statistics
+
+| Metric | Value |
+|--------|-------|
+| API Calls | ${STATS_API_CALLS} |
+| API Retries | ${STATS_API_RETRIES} |
+| API Failures | ${STATS_API_FAILURES} |
+| Batches Completed | ${STATS_BATCHES_COMPLETED} |
+| Batch Size | ${BATCH_SIZE} |
+| Max Retries | ${MAX_RETRIES} |
+| API Timeout | ${API_TIMEOUT}s |
 
 EOF
 
@@ -4905,6 +5807,18 @@ main() {
     select_data_categories
     authenticate_splunk
     select_usage_period
+
+    # Phase 2: Detect SHC role and show warning if on Captain
+    detect_shc_role
+    show_shc_captain_warning
+
+    # Phase 2: Check for resume from previous export
+    if [ -d "/tmp/dynabridge_export_"* ] 2>/dev/null; then
+      check_resume_export
+    fi
+
+    # Phase 2: Large environment scope selection
+    select_export_scope
   fi
 
   # Prepare export

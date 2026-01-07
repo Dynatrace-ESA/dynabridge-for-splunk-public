@@ -2,7 +2,7 @@
 
 ################################################################################
 #
-#  DynaBridge Splunk Cloud Export Script v3.6.0
+#  DynaBridge Splunk Cloud Export Script v4.0.0
 #
 #  REST API-Only Data Collection for Splunk Cloud Migration to Dynatrace
 #
@@ -91,7 +91,7 @@ set -o pipefail  # Fail on pipe errors
 # SCRIPT CONFIGURATION
 # =============================================================================
 
-SCRIPT_VERSION="3.6.0"
+SCRIPT_VERSION="4.0.0"
 SCRIPT_NAME="DynaBridge Splunk Cloud Export"
 
 # ANSI color codes
@@ -162,12 +162,36 @@ declare -A HOST_MAP 2>/dev/null || HOST_MAP=()
 ANON_EMAIL_COUNTER=0
 ANON_HOST_COUNTER=0
 
+# =============================================================================
+# ENTERPRISE RESILIENCE CONFIGURATION (v4.0.0)
+# =============================================================================
+# These settings enable enterprise-scale exports (4000+ dashboards, 10K+ alerts)
+# Override via environment variables: BATCH_SIZE=50 ./dynabridge-splunk-cloud-export.sh
+
+# Pagination settings
+BATCH_SIZE=${BATCH_SIZE:-100}              # Items per API request
+RATE_LIMIT_DELAY=${RATE_LIMIT_DELAY:-0.1}  # Delay between paginated requests (100ms - polite but fast)
+
+# Timeout settings - GENEROUS defaults for enterprise Cloud environments
+CONNECT_TIMEOUT=${CONNECT_TIMEOUT:-30}     # Initial connection timeout
+API_TIMEOUT=${API_TIMEOUT:-120}            # Per-request timeout (2 min - handles large result sets)
+
+# Total runtime limit - prevents runaway scripts
+MAX_TOTAL_TIME=${MAX_TOTAL_TIME:-14400}    # Maximum total script runtime (4 hours for 5000+ assets)
+
+# Retry settings
+MAX_RETRIES=${MAX_RETRIES:-3}              # Number of retry attempts for failed requests
+BACKOFF_MULTIPLIER=2                       # Exponential backoff multiplier
+
+# Checkpoint settings for interrupted exports
+CHECKPOINT_ENABLED=${CHECKPOINT_ENABLED:-true}   # Enable checkpoint/resume capability
+CHECKPOINT_INTERVAL=50                           # Save checkpoint every N items
+CHECKPOINT_FILE=""                               # Set at runtime: .export_checkpoint
+
 # Rate limiting (aligned with Enterprise script)
 API_DELAY_SECONDS=0.25     # Delay between API calls (seconds) - 250ms
 MAX_CONCURRENT_SEARCHES=1  # Don't run multiple searches in parallel
 SEARCH_POLL_INTERVAL=1     # How often to check if search is done (seconds)
-BACKOFF_MULTIPLIER=2
-MAX_RETRIES=5
 CURRENT_DELAY=$API_DELAY_SECONDS
 
 # Statistics
@@ -177,13 +201,17 @@ STATS_ALERTS=0
 STATS_USERS=0
 STATS_INDEXES=0
 STATS_API_CALLS=0
+STATS_API_RETRIES=0
+STATS_API_FAILURES=0
 STATS_RATE_LIMITS=0
 STATS_ERRORS=0
 STATS_WARNINGS=0
+STATS_BATCHES=0
 
 # Timing
 EXPORT_START_TIME=0
 EXPORT_END_TIME=0
+SCRIPT_START_TIME=$(date +%s)
 
 # Error tracking
 ERRORS_LOG=()
@@ -765,7 +793,8 @@ print(json.dumps('''$str'''))
 # API REQUEST FUNCTIONS
 # =============================================================================
 
-# Make authenticated REST API call with rate limiting and retries
+# Make authenticated REST API call with rate limiting, retries, and timeouts
+# Enterprise resilience: includes configurable timeouts, exponential backoff, and retry tracking
 api_call() {
   local endpoint="$1"
   local method="${2:-GET}"
@@ -775,6 +804,14 @@ api_call() {
   local http_code=""
 
   ((STATS_API_CALLS++))
+
+  # Check total runtime limit
+  local current_time=$(date +%s)
+  local elapsed=$((current_time - SCRIPT_START_TIME))
+  if [ $elapsed -gt $MAX_TOTAL_TIME ]; then
+    error "Maximum runtime ($MAX_TOTAL_TIME seconds) exceeded. Export incomplete."
+    return 1
+  fi
 
   # Build URL
   local url="${SPLUNK_URL}${endpoint}"
@@ -788,7 +825,7 @@ api_call() {
   fi
 
   # Add delay for rate limiting
-  sleep "$CURRENT_DELAY"
+  sleep "$RATE_LIMIT_DELAY"
 
   while [ $retries -lt $MAX_RETRIES ]; do
     local tmp_file=$(mktemp)
@@ -798,15 +835,21 @@ api_call() {
       # Using -d with GET causes curl to send POST, resulting in HTTP 405
       if [ -n "$data" ]; then
         http_code=$(curl -s -k -w "%{http_code}" -o "$tmp_file" \
+          --connect-timeout "$CONNECT_TIMEOUT" \
+          --max-time "$API_TIMEOUT" \
           -H "$auth_header" \
           "${url}?${data}")
       else
         http_code=$(curl -s -k -w "%{http_code}" -o "$tmp_file" \
+          --connect-timeout "$CONNECT_TIMEOUT" \
+          --max-time "$API_TIMEOUT" \
           -H "$auth_header" \
           "$url?output_mode=json")
       fi
     else
       http_code=$(curl -s -k -w "%{http_code}" -o "$tmp_file" \
+        --connect-timeout "$CONNECT_TIMEOUT" \
+        --max-time "$API_TIMEOUT" \
         -X "$method" \
         -H "$auth_header" \
         -H "Content-Type: application/x-www-form-urlencoded" \
@@ -819,30 +862,38 @@ api_call() {
 
     case "$http_code" in
       200|201)
-        # Success - reset delay
-        CURRENT_DELAY=$REQUEST_DELAY
+        # Success
         log "API call successful: $method $endpoint"
         echo "$response"
         return 0
         ;;
+      000)
+        # Timeout or connection error
+        ((retries++))
+        ((STATS_API_RETRIES++))
+        local delay=$((retries * 2))
+        warning "Timeout/connection error. Retry $retries/$MAX_RETRIES in ${delay}s"
+        sleep "$delay"
+        ;;
       429)
         # Rate limited
         ((STATS_RATE_LIMITS++))
+        ((STATS_API_RETRIES++))
         ((retries++))
 
-        # Extract Retry-After header if available
-        local wait_time=$((CURRENT_DELAY * BACKOFF_MULTIPLIER))
+        local wait_time=$((retries * BACKOFF_MULTIPLIER * 2))
         if [ $wait_time -gt 60 ]; then wait_time=60; fi
 
         warning "Rate limited (429). Waiting ${wait_time}s before retry ($retries/$MAX_RETRIES)..."
         sleep "$wait_time"
-        CURRENT_DELAY=$wait_time
         ;;
       401)
+        ((STATS_API_FAILURES++))
         error "Authentication failed (401). Please check your credentials."
         return 1
         ;;
       403)
+        ((STATS_API_FAILURES++))
         error "Access forbidden (403) for: $endpoint. Check user capabilities."
         return 1
         ;;
@@ -852,11 +903,13 @@ api_call() {
         ;;
       500|502|503)
         ((retries++))
+        ((STATS_API_RETRIES++))
         local wait_time=$((retries * 2))
         warning "Server error ($http_code). Retrying in ${wait_time}s ($retries/$MAX_RETRIES)..."
         sleep "$wait_time"
         ;;
       *)
+        ((STATS_API_FAILURES++))
         error "Unexpected HTTP $http_code for: $endpoint"
         log "Response: $response"
         return 1
@@ -864,8 +917,228 @@ api_call() {
     esac
   done
 
+  ((STATS_API_FAILURES++))
   error "Max retries exceeded for: $endpoint"
   return 1
+}
+
+# =============================================================================
+# PAGINATED API CALL FUNCTION (v4.0.0)
+# =============================================================================
+# Fetch all items from an endpoint using pagination
+# Usage: api_call_paginated "/servicesNS/-/-/data/ui/views" "$output_dir" "dashboards"
+
+api_call_paginated() {
+  local endpoint="$1"
+  local output_dir="$2"
+  local category="$3"
+  local offset=0
+  local total=0
+  local fetched=0
+  local batch_num=0
+
+  # First, get total count
+  local count_response=$(api_call "$endpoint" "GET" "output_mode=json&count=1")
+  if [ $? -ne 0 ]; then
+    error "Failed to get count for $category"
+    return 1
+  fi
+
+  total=$(echo "$count_response" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('paging',{}).get('total',0))" 2>/dev/null || echo "0")
+
+  if [ "$total" = "0" ]; then
+    info "No $category found"
+    return 0
+  fi
+
+  info "Fetching $total $category in batches of $BATCH_SIZE..."
+  mkdir -p "$output_dir"
+
+  while [ $offset -lt $total ]; do
+    ((batch_num++))
+    ((STATS_BATCHES++))
+    local batch_file="$output_dir/batch_${batch_num}.json"
+
+    local batch_response=$(api_call "$endpoint" "GET" "output_mode=json&count=$BATCH_SIZE&offset=$offset")
+    if [ $? -ne 0 ]; then
+      warning "Failed to fetch batch $batch_num at offset $offset"
+      # Save checkpoint for resume
+      save_checkpoint "$category" "$offset" "$batch_num"
+      return 1
+    fi
+
+    echo "$batch_response" > "$batch_file"
+
+    local batch_count=$(echo "$batch_response" | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d.get('entry',[])))" 2>/dev/null || echo "0")
+    fetched=$((fetched + batch_count))
+
+    # Progress update
+    local percent=$((fetched * 100 / total))
+    printf "\r  Progress: %d%% (%d/%d)  " "$percent" "$fetched" "$total"
+
+    # Rate limiting between batches
+    sleep "$RATE_LIMIT_DELAY"
+    offset=$((offset + BATCH_SIZE))
+
+    # Save checkpoint periodically
+    if [ $((batch_num % CHECKPOINT_INTERVAL)) -eq 0 ]; then
+      save_checkpoint "$category" "$offset" "$batch_num"
+    fi
+  done
+
+  printf "\n"
+  success "Fetched $fetched $category in $batch_num batches"
+
+  # Merge batches into single file
+  merge_batch_files "$output_dir" "$category"
+  return 0
+}
+
+# Merge batch JSON files into a single file
+merge_batch_files() {
+  local batch_dir="$1"
+  local category="$2"
+  local merged_file="$batch_dir/${category}.json"
+
+  info "Merging batch files for $category..."
+
+  # Use Python to merge JSON arrays efficiently
+  python3 << EOF
+import json
+import glob
+import os
+
+batch_dir = "$batch_dir"
+merged_file = "$merged_file"
+category = "$category"
+
+all_entries = []
+batch_files = sorted(glob.glob(os.path.join(batch_dir, "batch_*.json")))
+
+for bf in batch_files:
+    try:
+        with open(bf, 'r') as f:
+            data = json.load(f)
+            entries = data.get('entry', [])
+            all_entries.extend(entries)
+    except Exception as e:
+        print(f"Warning: Failed to read {bf}: {e}")
+
+# Write merged output
+merged_data = {
+    "entry": all_entries,
+    "paging": {"total": len(all_entries)},
+    "_batch_info": {
+        "total_batches": len(batch_files),
+        "merged": True
+    }
+}
+
+with open(merged_file, 'w') as f:
+    json.dump(merged_data, f, indent=2)
+
+# Clean up batch files
+for bf in batch_files:
+    os.remove(bf)
+
+print(f"Merged {len(all_entries)} entries from {len(batch_files)} batches")
+EOF
+}
+
+# =============================================================================
+# CHECKPOINT/RESUME FUNCTIONS (v4.0.0)
+# =============================================================================
+
+# Save checkpoint for resume capability
+save_checkpoint() {
+  local category="$1"
+  local offset="$2"
+  local item="$3"
+
+  if [ "$CHECKPOINT_ENABLED" != "true" ] || [ -z "$CHECKPOINT_FILE" ]; then
+    return
+  fi
+
+  cat > "$CHECKPOINT_FILE" << EOF
+{
+  "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "category": "$category",
+  "last_offset": $offset,
+  "last_item": "$item",
+  "stats": {
+    "api_calls": $STATS_API_CALLS,
+    "batches": $STATS_BATCHES,
+    "dashboards": $STATS_DASHBOARDS,
+    "alerts": $STATS_ALERTS
+  }
+}
+EOF
+}
+
+# Load checkpoint if exists
+load_checkpoint() {
+  if [ "$CHECKPOINT_ENABLED" != "true" ] || [ -z "$CHECKPOINT_FILE" ] || [ ! -f "$CHECKPOINT_FILE" ]; then
+    return 1
+  fi
+
+  local checkpoint_time=$(python3 -c "import json; print(json.load(open('$CHECKPOINT_FILE')).get('timestamp',''))" 2>/dev/null)
+  local checkpoint_category=$(python3 -c "import json; print(json.load(open('$CHECKPOINT_FILE')).get('category',''))" 2>/dev/null)
+
+  if [ -n "$checkpoint_time" ]; then
+    echo ""
+    print_box_line "${YELLOW}INCOMPLETE EXPORT DETECTED${NC}"
+    echo ""
+    echo -e "  Found checkpoint from: ${CYAN}$checkpoint_time${NC}"
+    echo -e "  Last category: ${CYAN}$checkpoint_category${NC}"
+    echo ""
+    read -p "  Resume from checkpoint? (Y/n): " resume_choice
+    if [ "$resume_choice" != "n" ] && [ "$resume_choice" != "N" ]; then
+      return 0  # Resume
+    fi
+  fi
+  return 1  # Start fresh
+}
+
+# Clear checkpoint after successful completion
+clear_checkpoint() {
+  if [ -n "$CHECKPOINT_FILE" ] && [ -f "$CHECKPOINT_FILE" ]; then
+    rm -f "$CHECKPOINT_FILE"
+    log "Checkpoint cleared"
+  fi
+}
+
+# =============================================================================
+# TIMING STATISTICS (v4.0.0)
+# =============================================================================
+
+# Display export timing and statistics
+show_export_timing_stats() {
+  local end_time=$(date +%s)
+  local duration=$((end_time - SCRIPT_START_TIME))
+  local hours=$((duration / 3600))
+  local minutes=$(((duration % 3600) / 60))
+  local seconds=$((duration % 60))
+
+  echo ""
+  echo -e "${CYAN}╔══════════════════════════════════════════════════════════════════════════╗${NC}"
+  echo -e "${CYAN}║${NC}                    ${WHITE}EXPORT TIMING STATISTICS${NC}                            ${CYAN}║${NC}"
+  echo -e "${CYAN}╠══════════════════════════════════════════════════════════════════════════╣${NC}"
+
+  if [ $hours -gt 0 ]; then
+    printf "${CYAN}║${NC}  Total Duration:        %-46s${CYAN}║${NC}\n" "${hours}h ${minutes}m ${seconds}s"
+  elif [ $minutes -gt 0 ]; then
+    printf "${CYAN}║${NC}  Total Duration:        %-46s${CYAN}║${NC}\n" "${minutes} minutes ${seconds} seconds"
+  else
+    printf "${CYAN}║${NC}  Total Duration:        %-46s${CYAN}║${NC}\n" "${seconds} seconds"
+  fi
+
+  printf "${CYAN}║${NC}  API Calls:             %-46s${CYAN}║${NC}\n" "$STATS_API_CALLS"
+  printf "${CYAN}║${NC}  API Retries:           %-46s${CYAN}║${NC}\n" "$STATS_API_RETRIES"
+  printf "${CYAN}║${NC}  API Failures:          %-46s${CYAN}║${NC}\n" "$STATS_API_FAILURES"
+  printf "${CYAN}║${NC}  Rate Limit Hits:       %-46s${CYAN}║${NC}\n" "$STATS_RATE_LIMITS"
+  printf "${CYAN}║${NC}  Batches Completed:     %-46s${CYAN}║${NC}\n" "$STATS_BATCHES"
+
+  echo -e "${CYAN}╚══════════════════════════════════════════════════════════════════════════╝${NC}"
 }
 
 # Test connectivity to Splunk Cloud
@@ -3671,6 +3944,12 @@ main() {
 
   # Create archive
   create_archive
+
+  # Show export timing statistics (v4.0.0)
+  show_export_timing_stats
+
+  # Clear checkpoint on successful completion
+  clear_checkpoint
 
   # Show completion
   show_completion
