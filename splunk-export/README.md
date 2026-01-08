@@ -1,0 +1,321 @@
+# DynaBridge Splunk Export Scripts
+
+**Version**: 4.0.1
+**Last Updated**: January 2026
+
+---
+
+## Overview
+
+This directory contains the **DynaBridge Export Scripts** - comprehensive tools for extracting configuration data, dashboards, alerts, and usage analytics from Splunk environments to enable migration to Dynatrace Gen3.
+
+These scripts are the first step in the DynaBridge migration workflow. The export archive they produce is uploaded to the DynaBridge app in Dynatrace, where it powers dashboard conversion, alert migration, and data pipeline planning.
+
+---
+
+## Quick Start
+
+### Splunk Enterprise (On-Premises)
+
+```bash
+# Copy script to your Splunk Search Head
+scp dynabridge-splunk-export.sh splunk-server:/tmp/
+
+# SSH to the server and run as splunk user
+ssh splunk-server
+sudo -u splunk bash /tmp/dynabridge-splunk-export.sh
+
+# Follow the interactive prompts
+# Download the .tar.gz export file when complete
+```
+
+### Splunk Cloud
+
+```bash
+# Run from YOUR machine (not on Splunk Cloud)
+# You need network access to your Splunk Cloud instance
+
+./dynabridge-splunk-cloud-export.sh
+
+# Enter your stack URL and credentials when prompted
+```
+
+---
+
+## Available Scripts
+
+| Script | Target Environment | Size | Access Method |
+|--------|-------------------|------|---------------|
+| `dynabridge-splunk-export.sh` | Splunk Enterprise (on-premises) | 239 KB | SSH + File System + REST API |
+| `dynabridge-splunk-cloud-export.sh` | Splunk Cloud (Classic & Victoria) | 157 KB | REST API only |
+
+### Key Differences
+
+| Aspect | Enterprise Script | Cloud Script |
+|--------|------------------|--------------|
+| **Where to run** | ON the Splunk Search Head | ANYWHERE (your laptop, jump host) |
+| **Access method** | SSH + file system + REST API | REST API only |
+| **What you need** | SSH access + splunk user | Network access + API token |
+| **Configuration files** | Direct file system access | Reconstructed from REST API |
+
+---
+
+## What Gets Exported
+
+Both scripts collect the same categories of data:
+
+| Category | Description | Migration Use |
+|----------|-------------|---------------|
+| **Dashboards** | Classic XML + Dashboard Studio JSON | Visual conversion to Dynatrace apps |
+| **Alerts & Saved Searches** | savedsearches.conf with all definitions | SPL to DQL conversion, alert migration |
+| **Configuration Files** | props.conf, transforms.conf, indexes.conf, inputs.conf | OpenPipeline generation, field extraction |
+| **Users & RBAC** | Users, roles, capabilities (NO passwords) | Ownership mapping, stakeholder identification |
+| **Usage Analytics** | Dashboard views, search frequency, alert executions | Prioritization, elimination candidates |
+| **Index Statistics** | Sizes, retention, sourcetypes, volume metrics | Dynatrace bucket planning, capacity estimation |
+
+### What Does NOT Get Exported
+
+- User passwords or password hashes
+- API tokens or session keys
+- Actual log data (only metadata and structure)
+- SSL certificates or private keys
+
+---
+
+## Enterprise Resilience Features (v4.0)
+
+Both scripts include enterprise-scale features for large environments:
+
+| Feature | Default | Description |
+|---------|---------|-------------|
+| Batch Processing | 100 items/request | Handles 4000+ dashboards, 10K+ alerts |
+| API Timeout | 120 seconds | Extended timeout for large queries |
+| Max Runtime | 4 hours | Prevents runaway exports |
+| Retry Logic | 3 attempts | Exponential backoff on failures |
+| Checkpoint/Resume | Enabled | Resume interrupted exports |
+| Rate Limiting | 100ms delay | Prevents API throttling |
+
+### Automation Support
+
+```bash
+# Non-interactive mode with command-line arguments
+./dynabridge-splunk-export.sh \
+  -u admin \
+  -p 'YourPassword' \
+  --splunk-home /opt/splunk \
+  --anonymize \
+  -y  # Auto-confirm all prompts
+```
+
+---
+
+## Export Output
+
+Both scripts produce a `.tar.gz` archive with this structure:
+
+```
+dynabridge_export_<hostname>_<YYYYMMDD_HHMMSS>.tar.gz
+├── manifest.json                    # Export metadata and statistics
+├── dynasplunk-env-summary.md        # Human-readable summary
+├── export.log                       # Export process log
+├── _systeminfo/                     # System information
+├── _rbac/                           # Users and roles (no passwords)
+├── _indexes/                        # Index configurations
+├── _usage_analytics/                # Usage data for prioritization
+├── _system/                         # System-level configs
+├── dashboard_studio/                # Dashboard Studio exports
+└── <app_name>/                      # Per-app configurations
+    ├── default/
+    │   ├── props.conf
+    │   ├── transforms.conf
+    │   ├── savedsearches.conf
+    │   └── data/ui/views/*.xml      # Classic dashboards
+    ├── local/
+    └── lookups/                     # CSV lookup tables
+```
+
+---
+
+## Documentation
+
+This directory contains comprehensive documentation:
+
+### Prerequisites & Setup
+
+| Document | Description |
+|----------|-------------|
+| [README-SPLUNK-ENTERPRISE.md](README-SPLUNK-ENTERPRISE.md) | Complete prerequisites guide for Splunk Enterprise exports |
+| [README-SPLUNK-CLOUD.md](README-SPLUNK-CLOUD.md) | Complete prerequisites guide for Splunk Cloud exports |
+
+These documents cover:
+- Where to run the script (Search Head, SHC Captain, etc.)
+- Required Splunk user permissions and capabilities
+- Server access requirements (OS user, file system access)
+- Step-by-step walkthrough with expected output
+- Troubleshooting common issues
+
+### Technical Specifications
+
+| Document | Description |
+|----------|-------------|
+| [EXPORT-SCHEMA.md](EXPORT-SCHEMA.md) | Guaranteed output schema (v3.4) for all exports |
+| [SPLUNK-ENTERPRISE-EXPORT-SPECIFICATION.md](SPLUNK-ENTERPRISE-EXPORT-SPECIFICATION.md) | Detailed specification for Enterprise script |
+| [SPLUNK-CLOUD-EXPORT-SPECIFICATION.md](SPLUNK-CLOUD-EXPORT-SPECIFICATION.md) | Detailed specification for Cloud script |
+| [SCRIPT-GENERATED-ANALYTICS-REFERENCE.md](SCRIPT-GENERATED-ANALYTICS-REFERENCE.md) | Reference for all SPL queries used to generate usage analytics |
+
+### HTML Versions (In-App Viewing)
+
+Each markdown document has a corresponding `.dialog.html` version for viewing within the DynaBridge app. These are generated by `generate-html-docs.cjs`.
+
+---
+
+## Data Anonymization
+
+Both scripts support data anonymization for secure sharing with third parties:
+
+| Data Type | Anonymization Pattern |
+|-----------|----------------------|
+| Email addresses | `user######@anon.dynabridge.local` |
+| Hostnames | `host-########.anon.local` |
+| IP addresses | `[IP-REDACTED]` |
+| Webhook URLs | `https://webhook.anon.dynabridge.local/hook-###` |
+| API keys/tokens | `[API-KEY-########]` |
+
+**Key Properties:**
+- **Consistent mapping** - Same original value always produces same anonymized value
+- **Irreversible** - SHA-256 hashing, originals cannot be recovered
+- **Relationship preserved** - Data relationships remain intact
+
+Enable anonymization when sharing exports with consultants, support teams, or uploading to shared environments.
+
+---
+
+## Security & Privacy
+
+### What We Do
+
+- Automatically redact passwords in all .conf files
+- Redact API tokens and session keys
+- Redact SSL passwords and private key references
+- Keep all data local (no external transmission)
+- Generate exports with restrictive file permissions
+
+### What You Should Do
+
+1. **Transfer securely** - Use SCP, SFTP, or encrypted channels
+2. **Delete after upload** - Remove the export file after uploading to DynaBridge
+3. **Enable anonymization** - When sharing with external parties
+4. **Review before sharing** - Examine export contents if needed
+
+---
+
+## Support Files
+
+| File | Purpose |
+|------|---------|
+| `dynabridge-style.css` | Styling for HTML documentation |
+| `dynabridge-symbol.png` | DynaBridge logo for HTML docs |
+| `generate-html-docs.cjs` | Node.js script to generate HTML from markdown |
+| `html-template.html` | Template for standalone HTML docs |
+| `html-template-dialog.html` | Template for in-app dialog HTML docs |
+| `sync-export-script.cjs` | Utility to sync embedded scripts with source |
+| `docs_html/` | Generated HTML documentation output |
+
+---
+
+## Workflow Integration
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                     DYNABRIDGE MIGRATION WORKFLOW                        │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│  1. EXPORT (This Directory)                                             │
+│     • Run dynabridge-splunk-export.sh on Search Head                    │
+│     • OR run dynabridge-splunk-cloud-export.sh from any machine         │
+│     • Download .tar.gz export file                                      │
+│                                                                          │
+│  2. UPLOAD (DynaBridge App in Dynatrace)                               │
+│     • Open DynaBridge for Splunk app                                    │
+│     • Navigate to: Splunk Migration → Import                            │
+│     • Drag & drop the .tar.gz file                                     │
+│                                                                          │
+│  3. ANALYZE & CONVERT                                                   │
+│     • View migration analysis report                                    │
+│     • Preview dashboard conversions                                     │
+│     • Review alert migration recommendations                            │
+│     • Generate OpenPipeline templates                                   │
+│                                                                          │
+│  4. DEPLOY                                                              │
+│     • Publish converted dashboards to Dynatrace                         │
+│     • Deploy OpenPipeline configurations                                │
+│     • Create Dynatrace alerts from SPL queries                         │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Requirements
+
+### Enterprise Script
+
+| Requirement | Version | Check Command |
+|-------------|---------|---------------|
+| bash | 4.0+ | `bash --version` |
+| curl | Any | `curl --version` |
+| Python | 3.x (Splunk bundled) | `$SPLUNK_HOME/bin/python3 --version` |
+| tar | Any | `tar --version` |
+| jq | Optional | `jq --version` |
+
+### Cloud Script
+
+| Requirement | Version | Check Command |
+|-------------|---------|---------------|
+| bash | 4.0+ | `bash --version` |
+| curl | Any | `curl --version` |
+| Python 3 | 3.6+ | `python3 --version` |
+| jq | Recommended | `jq --version` |
+
+---
+
+## Troubleshooting
+
+### Common Issues
+
+| Issue | Solution |
+|-------|----------|
+| "Permission denied" | Run as `splunk` user or root |
+| "Connection refused" on REST API | Check Splunk is running, port 8089 is open |
+| "Unauthorized" (401) | Verify credentials, check user capabilities |
+| "Forbidden" (403) | Add `admin_all_objects` capability to user |
+| Export takes too long | Reduce batch size, run during off-peak hours |
+
+### Getting Help
+
+1. Check the relevant README document for your environment
+2. Review `export.log` in the export directory for detailed error messages
+3. Check `TROUBLESHOOTING.md` generated with partial exports
+4. Contact the DynaBridge team with error details
+
+---
+
+## Version History
+
+| Version | Date | Changes |
+|---------|------|---------|
+| 4.0.1 | Jan 2026 | Container-friendly progress display for kubectl/docker |
+| 4.0.0 | Jan 2026 | Enterprise resilience: pagination, checkpoints, retry logic |
+| 3.4.0 | Dec 2025 | Added ownership mapping for user-centric migration |
+| 3.3.0 | Dec 2025 | Added daily volume analysis and volume intelligence |
+| 3.2.0 | Dec 2025 | Added usage_intelligence to manifest for prioritization |
+
+---
+
+## License
+
+These scripts are part of the DynaBridge for Splunk application and are intended for use with valid Dynatrace licenses.
+
+---
+
+*For complete documentation, see the individual README files for your environment type.*
