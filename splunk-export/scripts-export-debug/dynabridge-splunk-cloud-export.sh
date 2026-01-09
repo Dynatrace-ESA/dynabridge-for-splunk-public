@@ -2032,18 +2032,26 @@ collect_dashboards() {
 
     # Get dashboards for this app
     local app_dashboards
-    app_dashboards=$(api_call "/servicesNS/-/$app/data/ui/views" "GET" "output_mode=json&count=0")
+    # Use search parameter to filter dashboards that BELONG to this app (not just visible from it)
+    # The eai:acl.app field indicates which app owns the dashboard
+    app_dashboards=$(api_call "/servicesNS/-/$app/data/ui/views" "GET" "output_mode=json&count=0&search=eai:acl.app=$app")
 
     if [ $? -eq 0 ]; then
       echo "$app_dashboards" > "$EXPORT_DIR/$app/dashboards/dashboard_list.json"
 
-      # Extract dashboard names and get full definitions
+      # Extract dashboard names - only from dashboards owned by this app
       local names
       if $HAS_JQ; then
-        names=$(echo "$app_dashboards" | jq -r '.entry[].name' 2>/dev/null)
+        # Filter to only dashboards where acl.app matches the target app
+        names=$(echo "$app_dashboards" | jq -r --arg app "$app" '.entry[] | select(.acl.app == $app) | .name' 2>/dev/null)
       else
+        # Fallback: extract names but may include inherited dashboards
+        # The API search parameter should have already filtered them
         names=$(echo "$app_dashboards" | grep -oP '"name"\s*:\s*"\K[^"]+')
       fi
+
+      local dash_count=$(echo "$names" | grep -c . 2>/dev/null || echo "0")
+      echo "  App: $app ($dash_count dashboards)"
 
       while IFS= read -r name; do
         if [ -n "$name" ]; then
@@ -2117,11 +2125,9 @@ try:
         parsed = json.loads(json_content)
         with open('$definition_file', 'w') as out:
             json.dump(parsed, out, indent=2)
-        print('extracted')
-    else:
-        print('no-definition')
+        # Silent success - bash will check if file exists
 except Exception as e:
-    print(f'error: {e}')
+    pass  # Silent failure - bash will handle missing file
 " 2>/dev/null
 
                 if [ -f "$definition_file" ]; then
@@ -2132,11 +2138,13 @@ except Exception as e:
               fi
 
               log "Exported Dashboard Studio: $name"
+              echo "    → Studio: $name"
             else
               # Classic dashboard (pure XML without Dashboard Studio reference)
               cp "$EXPORT_DIR/$app/dashboards/${name}.json" "$EXPORT_DIR/dashboards_classic/"
               ((classic_count++))
               log "Exported Classic Dashboard: $name"
+              echo "    → Classic: $name"
             fi
           fi
         fi
