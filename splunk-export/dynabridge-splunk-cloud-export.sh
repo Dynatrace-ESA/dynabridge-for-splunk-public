@@ -1,8 +1,15 @@
 #!/bin/bash
+# LINE ENDING FIX: Auto-detect and fix Windows CRLF line endings
+# If you see "$'\r': command not found" errors, this block will auto-fix and re-run
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]] && grep -q $'\r' "$0" 2>/dev/null; then
+    echo "Detected Windows line endings (CRLF). Converting to Unix (LF)..."
+    sed -i.bak 's/\r$//' "$0" && rm -f "$0.bak"
+    exec bash "$0" "$@"
+fi
 
 ################################################################################
 #
-#  DynaBridge Splunk Cloud Export Script v4.0.1
+#  DynaBridge Splunk Cloud Export Script v4.0.2
 #
 #  REST API-Only Data Collection for Splunk Cloud Migration to Dynatrace
 #
@@ -91,7 +98,7 @@ set -o pipefail  # Fail on pipe errors
 # SCRIPT CONFIGURATION
 # =============================================================================
 
-SCRIPT_VERSION="4.0.1"
+SCRIPT_VERSION="4.0.2"
 SCRIPT_NAME="DynaBridge Splunk Cloud Export"
 
 # ANSI color codes

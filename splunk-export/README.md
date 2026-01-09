@@ -1,6 +1,6 @@
 # DynaBridge Splunk Export Scripts
 
-**Version**: 4.0.1
+**Version**: 4.0.2
 **Last Updated**: January 2026
 
 ---
@@ -304,6 +304,7 @@ Enable anonymization when sharing exports with consultants, support teams, or up
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 4.0.2 | Jan 2026 | Auto-fix for CRLF line endings (Windows download compatibility) |
 | 4.0.1 | Jan 2026 | Container-friendly progress display for kubectl/docker |
 | 4.0.0 | Jan 2026 | Enterprise resilience: pagination, checkpoints, retry logic |
 | 3.4.0 | Dec 2025 | Added ownership mapping for user-centric migration |
