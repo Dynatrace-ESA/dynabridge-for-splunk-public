@@ -2,6 +2,15 @@
 
 **Version**: 4.0.2
 **Last Updated**: January 2026
+**Provided by**: [Dynatrace One](https://www.dynatrace.com/services-support/)
+
+---
+
+## About Dynatrace One
+
+These scripts are developed and maintained by **Dynatrace One** — the Services & Support division of Dynatrace. Our mission is to accelerate your success through automation, best practices, and expert guidance, helping you unlock the full value of the Dynatrace platform in the shortest time possible.
+
+Whether you're migrating from legacy monitoring tools or optimizing your observability strategy, Dynatrace One is here to ensure a seamless journey to modern, AI-powered observability.
 
 ---
 
