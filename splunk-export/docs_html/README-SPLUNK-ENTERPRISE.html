@@ -269,10 +269,13 @@
 <h1>DynaBridge Splunk Enterprise Export Script</h1>
 <h2>READ THIS FIRST - Complete Prerequisites Guide</h2>
 <p>
-<strong>Version</strong>: 4.0.1
+<strong>Version</strong>: 4.1.0
 <strong>Last Updated</strong>: January 2026
 <strong>Related Documents</strong>: <a href="SCRIPT-GENERATED-ANALYTICS-REFERENCE.md">Script-Generated Analytics Reference</a> | <a href="SPLUNK-ENTERPRISE-EXPORT-SPECIFICATION.md">Enterprise Export Specification</a> | <a href="EXPORT-IMPROVEMENT-ANALYSIS.md">Export Improvement Analysis</a>
 </p>
+<hr>
+<blockquote><p><strong>Developed for Dynatrace One by Enterprise Solutions & Architecture</strong></p></blockquote>
+<blockquote><p><em>An ACE Services Division of Dynatrace</em></p></blockquote>
 <hr>
 <h2>CRITICAL: Where to Run This Script</h2>
 <h3>TL;DR - Run It ONCE on the Search Head</h3>
@@ -381,7 +384,7 @@ This document explains <strong>everything you need to know</strong> before runni
 <li><a href="#5-pre-flight-checklist">Pre-Flight Checklist</a></li>
 <li><a href="#6-what-data-gets-collected">What Data Gets Collected</a></li>
 <li><a href="#7-security--privacy-considerations">Security & Privacy Considerations</a></li>
-<li><a href="#8-command-line-arguments--automation">Command-Line Arguments & Automation</a> <strong>(NEW in v4.0)</strong></li>
+<li><a href="#8-command-line-arguments--automation">Command-Line Arguments & Automation</a> <strong>(Updated in v4.1.0)</strong></li>
 <li><a href="#9-troubleshooting-access-issues">Troubleshooting Access Issues</a></li>
 </ol>
 <hr>
@@ -1009,7 +1012,7 @@ Toggle: 9
 <hr>
 <h2>8. Command-Line Arguments & Automation</h2>
 <p>
-<strong>NEW in v4.0</strong>: The script now supports command-line arguments for automation and CI/CD pipelines.
+<strong>Updated in v4.1.0</strong>: The script supports comprehensive command-line arguments for automation, app-scoped exports, and troubleshooting.
 </p>
 <h3>8.1 Available Command-Line Arguments</h3>
 <table>
@@ -1022,24 +1025,129 @@ Toggle: 9
 <tr><td><code>-h, --host</code></td><td>Splunk host (default: localhost)</td><td><code>-h splunk-server.local</code></td></tr>
 <tr><td><code>-P, --port</code></td><td>Splunk REST API port (default: 8089)</td><td><code>-P 8089</code></td></tr>
 <tr><td><code>--splunk-home</code></td><td>Splunk installation path</td><td><code>--splunk-home /opt/splunk</code></td></tr>
+<tr><td><code>--apps</code></td><td>Comma-separated list of apps to export <strong>(NEW v4.1.0)</strong></td><td><code>--apps "search,myapp,security"</code></td></tr>
+<tr><td><code>--all-apps</code></td><td>Export all applications (default)</td><td><code>--all-apps</code></td></tr>
+<tr><td><code>--quick</code></td><td>Quick mode - skip analytics <strong>(TESTING ONLY - see warning)</strong></td><td><code>--quick</code></td></tr>
+<tr><td><code>--scoped</code></td><td>Scope collections to selected apps only <strong>(NEW v4.1.0)</strong></td><td><code>--scoped</code></td></tr>
+<tr><td><code>--no-usage</code></td><td>Skip usage analytics collection <strong>(NEW v4.1.0)</strong></td><td><code>--no-usage</code></td></tr>
+<tr><td><code>--no-rbac</code></td><td>Skip RBAC/user collection <strong>(NEW v4.1.0)</strong></td><td><code>--no-rbac</code></td></tr>
 <tr><td><code>--anonymize</code></td><td>Enable data anonymization (default)</td><td><code>--anonymize</code></td></tr>
 <tr><td><code>--no-anonymize</code></td><td>Disable data anonymization</td><td><code>--no-anonymize</code></td></tr>
 <tr><td><code>-y, --yes</code></td><td>Auto-confirm all prompts (non-interactive)</td><td><code>-y</code></td></tr>
+<tr><td><code>-d, --debug</code></td><td>Enable verbose debug logging <strong>(NEW v4.1.0)</strong></td><td><code>--debug</code></td></tr>
 <tr><td><code>--help</code></td><td>Show help message</td><td><code>--help</code></td></tr>
 </tbody>
 </table>
 <h3>8.2 Non-Interactive Mode (Automation)</h3>
 <p>
-Use <code>-y</code> or <code>--yes</code> to run the script without any prompts:
+Non-interactive mode is automatically enabled when username AND password are provided (via CLI arguments or environment variables):
 </p>
 <pre><code class="language-bash"># Fully automated export
 ./dynabridge-splunk-export.sh \
   -u admin \
   -p &#039;YourPassword&#039; \
   --splunk-home /opt/splunk \
-  --anonymize \
-  -y</code></pre>
-<h3>8.3 Environment Variables</h3>
+  --anonymize</code></pre>
+<h3>8.3 App-Scoped Export Mode (NEW in v4.1.0)</h3>
+<p>
+For large environments with many apps, you can dramatically reduce export time by targeting specific apps:
+</p>
+<pre><code class="language-bash"># Export only specific apps (fastest option)
+./dynabridge-splunk-export.sh \
+  -u admin -p &#039;YourPassword&#039; \
+  --apps &quot;search,myapp,security_essentials&quot; \
+  --quick
+
+# Scoped mode - exports app configs + only users/searches related to those apps
+./dynabridge-splunk-export.sh \
+  -u admin -p &#039;YourPassword&#039; \
+  --apps &quot;myapp,otherapp&quot; \
+  --scoped</code></pre>
+<table>
+<thead>
+<tr><th>Mode</th><th>What It Does</th><th>Use When</th></tr>
+</thead>
+<tbody>
+<tr><td><code>--quick</code></td><td>App configs only, no global analytics</td><td><strong>Testing/validation only</strong> - NOT for migration analysis</td></tr>
+<tr><td><code>--scoped</code></td><td>App configs + app-filtered users/usage</td><td>You want usage data but only for selected apps</td></tr>
+<tr><td>(default)</td><td>Full export of all apps + global analytics</td><td><strong>Recommended</strong> - Full migration analysis</td></tr>
+</tbody>
+</table>
+<blockquote><p><strong>⚠️ CRITICAL WARNING: Do NOT use <code>--quick</code> for Migration Analysis</strong></p></blockquote>
+<p>
+>
+</p>
+<blockquote><p>The <code>--quick</code> flag is intended <strong>ONLY for testing and script validation</strong>, not for actual migration planning. Using <code>--quick</code> eliminates critical data needed for migration analysis:</p></blockquote>
+<p>
+>
+</p>
+<blockquote><p>- <strong>Usage Analytics</strong>: Who uses which dashboards/alerts, how often, and when last accessed</p></blockquote>
+<blockquote><p>- <strong>User & RBAC Data</strong>: Migration audience identification, role mappings, permission structures</p></blockquote>
+<blockquote><p>- <strong>Search Activity</strong>: Which saved searches are actively used vs. abandoned</p></blockquote>
+<blockquote><p>- <strong>Priority Assessment</strong>: Data needed to determine migration priority and phasing</p></blockquote>
+<p>
+>
+</p>
+<blockquote><p><strong>Without this data, you cannot:</strong></p></blockquote>
+<blockquote><p>- Identify which assets are actually being used vs. unused/abandoned</p></blockquote>
+<blockquote><p>- Understand who your migration audiences are</p></blockquote>
+<blockquote><p>- Prioritize which dashboards/alerts to migrate first</p></blockquote>
+<blockquote><p>- Make informed decisions about what may or may not be needed</p></blockquote>
+<p>
+>
+</p>
+<blockquote><p><strong>Always use the default (full) export or <code>--scoped</code> for any export intended for migration analysis.</strong></p></blockquote>
+<p>
+<strong>Performance comparison:</strong>
+</p>
+<table>
+<thead>
+<tr><th>Environment Size</th><th>Full Export</th><th>--scoped</th><th>--quick</th></tr>
+</thead>
+<tbody>
+<tr><td>Small (100 dashboards)</td><td>~5 min</td><td>~3 min</td><td>~1 min</td></tr>
+<tr><td>Medium (500 dashboards)</td><td>~15 min</td><td>~8 min</td><td>~3 min</td></tr>
+<tr><td>Large (2000+ dashboards)</td><td>~45 min</td><td>~15 min</td><td>~5 min</td></tr>
+<tr><td>Enterprise (5000+ dashboards)</td><td>~2 hours</td><td>~30 min</td><td>~10 min</td></tr>
+</tbody>
+</table>
+<h3>8.4 Debug Mode (NEW in v4.1.0)</h3>
+<p>
+When troubleshooting issues, enable debug mode to capture detailed logs:
+</p>
+<pre><code class="language-bash">./dynabridge-splunk-export.sh \
+  -u admin -p &#039;YourPassword&#039; \
+  --apps myapp \
+  --debug</code></pre>
+<p>
+Debug mode provides:
+</p>
+<ul>
+<li><strong>Console output</strong>: Color-coded messages by category (API, SEARCH, TIMING, ERROR, WARN)</li>
+<li><strong>Debug log file</strong>: <code>export_debug.log</code> inside the export directory (included in the .tar.gz)</li>
+<li><strong>Detailed timing</strong>: Duration of each API call and search operation</li>
+<li><strong>Configuration state</strong>: All settings logged at startup</li>
+<li><strong>API call tracking</strong>: Every REST API call with HTTP status and response size</li>
+<li><strong>Search job lifecycle</strong>: Creation, polling, completion, and timeouts</li>
+</ul>
+<p>
+<strong>Debug log categories:</strong>
+</p>
+<table>
+<thead>
+<tr><th>Category</th><th>Color</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td>ERROR</td><td>Red</td><td>Errors that prevented data collection</td></tr>
+<tr><td>WARN</td><td>Yellow</td><td>Warnings (retries, rate limits, missing data)</td></tr>
+<tr><td>API</td><td>Cyan</td><td>REST API calls with timing</td></tr>
+<tr><td>SEARCH</td><td>Magenta</td><td>Search job lifecycle</td></tr>
+<tr><td>TIMING</td><td>Blue</td><td>Operation durations</td></tr>
+<tr><td>CONFIG</td><td>Gray</td><td>Configuration settings</td></tr>
+<tr><td>ENV</td><td>Gray</td><td>Environment information</td></tr>
+</tbody>
+</table>
+<h3>8.5 Environment Variables</h3>
 <p>
 The script also supports environment variables (useful for container deployments):
 </p>
@@ -1058,7 +1166,7 @@ Example:
 <pre><code class="language-bash">export SPLUNK_ADMIN_USER=&quot;admin&quot;
 export SPLUNK_ADMIN_PASSWORD=&quot;MySecurePassword&quot;
 ./dynabridge-splunk-export.sh -y --splunk-home /opt/splunk</code></pre>
-<h3>8.4 CI/CD Pipeline Integration</h3>
+<h3>8.6 CI/CD Pipeline Integration</h3>
 <p>
 Example for Jenkins/GitLab CI:
 </p>
@@ -1076,7 +1184,7 @@ splunk_export:
   artifacts:
     paths:
       - dynabridge-export-*.tar.gz</code></pre>
-<h3>8.5 Enhanced Anonymization (v4.0)</h3>
+<h3>8.7 Enhanced Anonymization</h3>
 <p>
 The v4.0 script now anonymizes additional sensitive data types:
 </p>
@@ -1098,7 +1206,7 @@ The v4.0 script now anonymizes additional sensitive data types:
 <p>
 This ensures your export can be safely shared with consultants or support teams.
 </p>
-<h3>8.6 Enterprise Resilience Features (v4.0.0)</h3>
+<h3>8.8 Enterprise Resilience Features</h3>
 <p>
 <strong>NEW in v4.0.0</strong>: The script now includes comprehensive enterprise-scale features for environments with 4000+ dashboards and 10K+ alerts.
 </p>
@@ -1320,7 +1428,7 @@ When you run <code>./dynabridge-splunk-export.sh</code>, you'll see:
 ║                 🏢  SPLUNK ENTERPRISE EXPORT SCRIPT  🏢                       ║
 ║                                                                                ║
 ║          Complete Data Collection for Migration to Dynatrace Gen3            ║
-║                        Version 4.0.0                                    ║
+║                        Version 4.1.0                                    ║
 ║                                                                                ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 
@@ -1653,7 +1761,7 @@ This human-readable summary report is generated in the export directory:
 
 **Export Date**: 2025-12-03T20:23:47Z
 **Hostname**: splunk-sh01.acme-corp.com
-**Export Tool Version**: 4.0.0
+**Export Tool Version**: 4.1.0
 
 ---
 
@@ -1740,7 +1848,7 @@ This human-readable summary report is generated in the export directory:
 
 ---
 
-*Generated by DynaBridge Splunk Export Tool v4.0.0*</code></pre>
+*Generated by DynaBridge Splunk Export Tool v4.1.0*</code></pre>
 <h3>Example: manifest.json (Schema)</h3>
 <p>
 This machine-readable manifest is used by DynaBridge to process your export:

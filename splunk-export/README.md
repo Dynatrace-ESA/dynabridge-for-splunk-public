@@ -1,16 +1,12 @@
 # DynaBridge Splunk Export Scripts
 
-**Version**: 4.0.2
+**Version**: 4.1.0
 **Last Updated**: January 2026
-**Provided by**: [Dynatrace One](https://www.dynatrace.com/services-support/)
 
 ---
 
-## About Dynatrace One
-
-These scripts are developed and maintained by **Dynatrace One** — the Services & Support division of Dynatrace. Our mission is to accelerate your success through automation, best practices, and expert guidance, helping you unlock the full value of the Dynatrace platform in the shortest time possible.
-
-Whether you're migrating from legacy monitoring tools or optimizing your observability strategy, Dynatrace One is here to ensure a seamless journey to modern, AI-powered observability.
+> **Developed for Dynatrace One by Enterprise Solutions & Architecture**
+> *An ACE Services Division of Dynatrace*
 
 ---
 
@@ -91,7 +87,35 @@ Both scripts collect the same categories of data:
 
 ---
 
-## Enterprise Resilience Features (v4.0)
+## New in v4.1.0
+
+### App-Scoped Export Mode
+
+Target specific apps for faster exports in large environments:
+
+| Flag | Description |
+|------|-------------|
+| `--apps "app1,app2"` | Export only specified apps |
+| `--scoped` | Scope all collections (users, usage) to selected apps |
+| `--quick` | **TESTING ONLY** - Skip usage analytics and RBAC |
+| `--no-usage` | Skip usage analytics collection |
+| `--no-rbac` | Skip RBAC/user collection (Enterprise only) |
+| `--debug` or `-d` | Enable verbose debug logging |
+
+> **⚠️ WARNING: `--quick` is for TESTING ONLY**
+>
+> Do NOT use `--quick` for migration analysis. It skips usage analytics, user/RBAC data, and priority assessment data critical for migration planning. Use full export (default) or `--scoped` for actual migrations.
+
+### Debug Mode
+
+Enable detailed logging for troubleshooting with `--debug`:
+- Color-coded console output (ERROR, WARN, API, SEARCH, TIMING)
+- Debug log file: `export_debug.log` included in the export archive
+- API call tracking with response times and sizes
+
+---
+
+## Enterprise Resilience Features
 
 Both scripts include enterprise-scale features for large environments:
 
@@ -107,13 +131,21 @@ Both scripts include enterprise-scale features for large environments:
 ### Automation Support
 
 ```bash
-# Non-interactive mode with command-line arguments
+# Non-interactive mode - full export
 ./dynabridge-splunk-export.sh \
   -u admin \
   -p 'YourPassword' \
   --splunk-home /opt/splunk \
   --anonymize \
   -y  # Auto-confirm all prompts
+
+# App-scoped export with usage data (recommended for large environments)
+./dynabridge-splunk-export.sh \
+  -u admin \
+  -p 'YourPassword' \
+  --apps "myapp1,myapp2" \
+  --scoped \
+  --debug
 ```
 
 ---

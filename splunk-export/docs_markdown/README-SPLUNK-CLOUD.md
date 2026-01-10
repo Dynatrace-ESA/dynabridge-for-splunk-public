@@ -1,9 +1,14 @@
 # DynaBridge Splunk Cloud Export Script
 ## Prerequisites Guide for Splunk Cloud (Classic & Victoria Experience)
 
-**Version**: 4.0.1
+**Version**: 4.1.0
 **Last Updated**: January 2026
 **Related Documents**: [Script-Generated Analytics Reference](SCRIPT-GENERATED-ANALYTICS-REFERENCE.md) | [Cloud Export Specification](SPLUNK-CLOUD-EXPORT-SPECIFICATION.md)
+
+---
+
+> **Developed for Dynatrace One by Enterprise Solutions & Architecture**
+> *An ACE Services Division of Dynatrace*
 
 ---
 
@@ -260,7 +265,88 @@ export SPLUNK_CLOUD_TOKEN="your-api-token"
 
 ---
 
-## Enterprise Resilience Features (v4.0.0)
+## Command-Line Arguments (Updated in v4.1.0)
+
+| Argument | Description | Example |
+|----------|-------------|---------|
+| `--stack` | Splunk Cloud stack URL | `--stack acme.splunkcloud.com` |
+| `--token` | API token for authentication | `--token "xxxxx"` |
+| `--user` | Username (if not using token) | `--user admin` |
+| `--password` | Password (if not using token) | `--password "xxx"` |
+| `--apps` | Comma-separated list of apps **(NEW v4.1.0)** | `--apps "search,myapp"` |
+| `--all-apps` | Export all applications (default) | `--all-apps` |
+| `--quick` | Quick mode - skip analytics **(TESTING ONLY - see warning)** | `--quick` |
+| `--scoped` | Scope collections to selected apps only **(NEW v4.1.0)** | `--scoped` |
+| `--no-usage` | Skip usage analytics collection | `--no-usage` |
+| `--skip-internal` | Skip searches requiring _internal index | `--skip-internal` |
+| `--output` | Output directory | `--output /path/to/output` |
+| `-d, --debug` | Enable verbose debug logging **(NEW v4.1.0)** | `--debug` |
+| `--help` | Show help message | `--help` |
+
+### App-Scoped Export Mode (NEW in v4.1.0)
+
+For large Splunk Cloud environments, dramatically reduce export time by targeting specific apps:
+
+```bash
+# Export only specific apps (fastest option)
+./dynabridge-splunk-cloud-export.sh \
+  --stack acme.splunkcloud.com \
+  --token "$TOKEN" \
+  --apps "search,myapp,security_essentials" \
+  --quick
+
+# Scoped mode - exports app configs + only users/searches related to those apps
+./dynabridge-splunk-cloud-export.sh \
+  --stack acme.splunkcloud.com \
+  --token "$TOKEN" \
+  --apps "myapp,otherapp" \
+  --scoped
+```
+
+| Mode | What It Does | Use When |
+|------|-------------|----------|
+| `--quick` | App configs only, no global analytics | **Testing/validation only** - NOT for migration analysis |
+| `--scoped` | App configs + app-filtered users/usage | You want usage data but only for selected apps |
+| (default) | Full export of all apps + global analytics | **Recommended** - Full migration analysis |
+
+> **⚠️ CRITICAL WARNING: Do NOT use `--quick` for Migration Analysis**
+>
+> The `--quick` flag is intended **ONLY for testing and script validation**, not for actual migration planning. Using `--quick` eliminates critical data needed for migration analysis:
+>
+> - **Usage Analytics**: Who uses which dashboards/alerts, how often, and when last accessed
+> - **User & RBAC Data**: Migration audience identification, role mappings, permission structures
+> - **Search Activity**: Which saved searches are actively used vs. abandoned
+> - **Priority Assessment**: Data needed to determine migration priority and phasing
+>
+> **Without this data, you cannot:**
+> - Identify which assets are actually being used vs. unused/abandoned
+> - Understand who your migration audiences are
+> - Prioritize which dashboards/alerts to migrate first
+> - Make informed decisions about what may or may not be needed
+>
+> **Always use the default (full) export or `--scoped` for any export intended for migration analysis.**
+
+### Debug Mode (NEW in v4.1.0)
+
+When troubleshooting issues, enable debug mode to capture detailed logs:
+
+```bash
+./dynabridge-splunk-cloud-export.sh \
+  --stack acme.splunkcloud.com \
+  --token "$TOKEN" \
+  --apps myapp \
+  --debug
+```
+
+Debug mode provides:
+- **Console output**: Color-coded messages by category (API, SEARCH, TIMING, ERROR, WARN)
+- **Debug log file**: `export_debug.log` inside the export directory (included in the .tar.gz)
+- **API call tracking**: Every REST API call with HTTP status and response size
+- **Detailed timing**: Duration of each API call and search operation
+
+---
+
+## Enterprise Resilience Features
 
 **NEW in v4.0.0**: The Cloud script now includes the same enterprise-scale features as the Enterprise script for environments with 4000+ dashboards and 10K+ alerts.
 
@@ -522,7 +608,7 @@ When you run `./dynabridge-splunk-cloud-export.sh`, you'll see:
 ║                   ☁️  SPLUNK CLOUD EXPORT SCRIPT  ☁️                         ║
 ║                                                                                ║
 ║          Complete REST API-Based Data Collection for Migration              ║
-║                        Version 4.0.0                                    ║
+║                        Version 4.1.0                                    ║
 ║                                                                                ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 
@@ -779,7 +865,7 @@ This human-readable summary report is generated in the export directory:
 # DynaBridge Splunk Cloud Environment Summary
 
 **Export Date**: 2025-12-03 14:30:52 EST
-**Export Script Version**: 4.0.0
+**Export Script Version**: 4.1.0
 **Export Type**: Splunk Cloud (REST API)
 
 ---

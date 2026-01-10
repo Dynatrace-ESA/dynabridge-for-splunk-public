@@ -1,9 +1,14 @@
 # DynaBridge Splunk Cloud Export Script - Technical Specification
 
-## Version 4.0.1 | REST API-Only Data Collection for Splunk Cloud
+## Version 4.1.0 | REST API-Only Data Collection for Splunk Cloud
 
 **Last Updated**: January 2026
 **Related Documents**: [Script-Generated Analytics Reference](SCRIPT-GENERATED-ANALYTICS-REFERENCE.md) | [Cloud README](README-SPLUNK-CLOUD.md) | [Export Schema](EXPORT-SCHEMA.md)
+
+---
+
+> **Developed for Dynatrace One by Enterprise Solutions & Architecture**
+> *An ACE Services Division of Dynatrace*
 
 ---
 
@@ -21,6 +26,29 @@ This specification defines the complete requirements for a **Splunk Cloud-specif
 | **SPLUNK_HOME access** | Yes | No |
 | **File-based configs** | Yes (props.conf, etc.) | No - must use REST endpoints |
 | **Output format** | Same `.tar.gz` structure | Same `.tar.gz` structure |
+
+---
+
+## What's New in v4.1.0
+
+### App-Scoped Export Mode
+- **`--apps` flag**: Export specific apps only (e.g., `--apps "search,myapp,security"`)
+- **`--quick` mode**: Skip global analytics for fastest possible export (**TESTING ONLY**)
+- **`--scoped` mode**: Scope RBAC/usage collection to selected apps only
+- **Auto-scoped**: When `--apps` is specified, collections automatically scope to those apps
+
+> **⚠️ WARNING**: `--quick` is for **testing/validation only**. It eliminates usage analytics, user data, and RBAC information critical for migration analysis. Always use full or `--scoped` export for actual migration planning.
+
+### Debug Mode
+- **`--debug` flag**: Enable verbose logging for troubleshooting
+- **Debug log file**: `export_debug.log` with detailed API/search lifecycle
+- **Color-coded console output**: ERROR (red), WARN (yellow), API (cyan), SEARCH (magenta), TIMING (blue)
+- **Sensitive data redaction**: Passwords and tokens automatically redacted in debug output
+
+### Performance Improvements
+- **App-filtered queries**: Usage searches now filter by selected apps
+- **Reduced scope**: Quick mode can complete in minutes vs hours for large environments
+- **`--no-usage`**: Skip usage analytics collection entirely
 
 ---
 
@@ -705,10 +733,10 @@ The script generates a standardized `manifest.json` file with a guaranteed schem
 
 ```json
 {
-  "schemaVersion": "4.0.0",
+  "schemaVersion": "4.1.0",
   "exportType": "splunk_cloud",
   "exportTimestamp": "2025-12-03T10:30:00Z",
-  "scriptVersion": "4.0.0",
+  "scriptVersion": "4.1.0",
 
   "cloudEnvironment": {
     "stackUrl": "acme-corp.splunkcloud.com",
@@ -987,4 +1015,4 @@ The script uses jq extensively for:
 ---
 
 *End of Splunk Cloud Export Script Technical Specification*
-*Version 4.0.0*
+*Version 4.1.0*

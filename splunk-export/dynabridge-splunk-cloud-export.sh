@@ -9,7 +9,7 @@ fi
 
 ################################################################################
 #
-#  DynaBridge Splunk Cloud Export Script v4.0.2
+#  DynaBridge Splunk Cloud Export Script v4.1.0
 #
 #  REST API-Only Data Collection for Splunk Cloud Migration to Dynatrace
 #
@@ -98,7 +98,7 @@ set -o pipefail  # Fail on pipe errors
 # SCRIPT CONFIGURATION
 # =============================================================================
 
-SCRIPT_VERSION="4.0.2"
+SCRIPT_VERSION="4.1.0"
 SCRIPT_NAME="DynaBridge Splunk Cloud Export"
 
 # ANSI color codes
@@ -162,6 +162,23 @@ COLLECT_LOOKUPS=false
 COLLECT_AUDIT=false
 ANONYMIZE_DATA=true
 USAGE_PERIOD="30d"
+# Skip _internal index searches (required for Splunk Cloud where _internal is restricted)
+SKIP_INTERNAL=false
+
+# App-scoped collection mode - when true, limits all collections to selected apps only
+# This dramatically reduces export time when only specific apps are selected
+# Auto-enabled when --apps is used (unless --all-apps is also specified)
+SCOPE_TO_APPS=false
+
+# Quick mode - skips expensive global analytics entirely, just collects app configs
+QUICK_MODE=false
+
+# Non-interactive mode flag (set automatically when all params provided)
+NON_INTERACTIVE=false
+
+# Debug mode - enables verbose logging for troubleshooting
+DEBUG_MODE=false
+DEBUG_LOG_FILE=""
 
 # Anonymization mappings (populated at runtime)
 declare -A EMAIL_MAP 2>/dev/null || EMAIL_MAP=()
@@ -386,11 +403,158 @@ log() {
   fi
 }
 
+# =============================================================================
+# DEBUG LOGGING FUNCTIONS
+# =============================================================================
+
+# Initialize debug log file
+init_debug_log() {
+  if [ "$DEBUG_MODE" = "true" ]; then
+    DEBUG_LOG_FILE="${EXPORT_DIR:-/tmp}/export_debug.log"
+    echo "===============================================================================" > "$DEBUG_LOG_FILE"
+    echo "DynaBridge Cloud Export Debug Log" >> "$DEBUG_LOG_FILE"
+    echo "Started: $(date -Iseconds 2>/dev/null || date)" >> "$DEBUG_LOG_FILE"
+    echo "Script Version: $SCRIPT_VERSION" >> "$DEBUG_LOG_FILE"
+    echo "===============================================================================" >> "$DEBUG_LOG_FILE"
+    echo "" >> "$DEBUG_LOG_FILE"
+
+    # Log environment info
+    debug_log "ENV" "Bash Version: ${BASH_VERSION:-unknown}"
+    debug_log "ENV" "OS: $(uname -s 2>/dev/null || echo 'unknown') $(uname -r 2>/dev/null || echo '')"
+    debug_log "ENV" "Hostname: $(hostname 2>/dev/null || echo 'unknown')"
+    debug_log "ENV" "User: $(whoami 2>/dev/null || echo 'unknown')"
+    debug_log "ENV" "PWD: $(pwd)"
+    debug_log "ENV" "curl version: $(curl --version 2>/dev/null | head -1 || echo 'not found')"
+    debug_log "ENV" "Splunk Stack: $SPLUNK_STACK"
+
+    echo -e "${CYAN}[DEBUG] Debug logging enabled → $DEBUG_LOG_FILE${NC}"
+  fi
+}
+
+# Log debug message (only when DEBUG_MODE is true)
+# Usage: debug_log "CATEGORY" "message"
+debug_log() {
+  if [ "$DEBUG_MODE" != "true" ]; then
+    return
+  fi
+
+  local category="${1:-INFO}"
+  local message="$2"
+  local timestamp=$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || date)
+
+  # Write to debug log file
+  if [ -n "$DEBUG_LOG_FILE" ] && [ -w "$(dirname "$DEBUG_LOG_FILE" 2>/dev/null || echo "/tmp")" ]; then
+    echo "[$timestamp] [$category] $message" >> "$DEBUG_LOG_FILE"
+  fi
+
+  # Also show on console in debug mode (with color coding)
+  case "$category" in
+    ERROR)   echo -e "${RED}[DEBUG:$category] $message${NC}" ;;
+    WARN)    echo -e "${YELLOW}[DEBUG:$category] $message${NC}" ;;
+    API)     echo -e "${CYAN}[DEBUG:$category] $message${NC}" ;;
+    SEARCH)  echo -e "${MAGENTA}[DEBUG:$category] $message${NC}" ;;
+    TIMING)  echo -e "${BLUE}[DEBUG:$category] $message${NC}" ;;
+    *)       echo -e "${GRAY}[DEBUG:$category] $message${NC}" ;;
+  esac
+}
+
+# Log API call details (redacts sensitive info)
+# Usage: debug_api_call "METHOD" "URL" "HTTP_CODE" "RESPONSE_SIZE" "DURATION_MS"
+debug_api_call() {
+  if [ "$DEBUG_MODE" != "true" ]; then
+    return
+  fi
+
+  local method="$1"
+  local url="$2"
+  local http_code="$3"
+  local response_size="${4:-unknown}"
+  local duration_ms="${5:-unknown}"
+
+  # Redact sensitive parts of URL
+  local safe_url=$(echo "$url" | sed 's/password=[^&]*/password=REDACTED/g' | sed 's/token=[^&]*/token=REDACTED/g')
+
+  debug_log "API" "$method $safe_url → HTTP $http_code (${response_size} bytes, ${duration_ms}ms)"
+}
+
+# Log search job lifecycle
+# Usage: debug_search_job "ACTION" "SID" "DETAILS"
+debug_search_job() {
+  if [ "$DEBUG_MODE" != "true" ]; then
+    return
+  fi
+
+  local action="$1"
+  local sid="$2"
+  local details="${3:-}"
+
+  debug_log "SEARCH" "[$action] sid=$sid $details"
+}
+
+# Log timing for operations
+# Usage: debug_timing "OPERATION" "DURATION_SECONDS"
+debug_timing() {
+  if [ "$DEBUG_MODE" != "true" ]; then
+    return
+  fi
+
+  local operation="$1"
+  local duration="$2"
+
+  debug_log "TIMING" "$operation completed in ${duration}s"
+}
+
+# Log current configuration state
+debug_config_state() {
+  if [ "$DEBUG_MODE" != "true" ]; then
+    return
+  fi
+
+  debug_log "CONFIG" "SPLUNK_STACK=$SPLUNK_STACK"
+  debug_log "CONFIG" "SPLUNK_URL=$SPLUNK_URL"
+  debug_log "CONFIG" "AUTH_METHOD=$AUTH_METHOD"
+  debug_log "CONFIG" "EXPORT_ALL_APPS=$EXPORT_ALL_APPS"
+  debug_log "CONFIG" "SCOPE_TO_APPS=$SCOPE_TO_APPS"
+  debug_log "CONFIG" "QUICK_MODE=$QUICK_MODE"
+  debug_log "CONFIG" "COLLECT_RBAC=$COLLECT_RBAC"
+  debug_log "CONFIG" "COLLECT_USAGE=$COLLECT_USAGE"
+  debug_log "CONFIG" "COLLECT_INDEXES=$COLLECT_INDEXES"
+  debug_log "CONFIG" "USAGE_PERIOD=$USAGE_PERIOD"
+  debug_log "CONFIG" "SELECTED_APPS=(${SELECTED_APPS[*]})"
+  debug_log "CONFIG" "BATCH_SIZE=$BATCH_SIZE"
+  debug_log "CONFIG" "API_TIMEOUT=$API_TIMEOUT"
+  debug_log "CONFIG" "SKIP_INTERNAL=$SKIP_INTERNAL"
+}
+
+# Finalize debug log
+finalize_debug_log() {
+  if [ "$DEBUG_MODE" = "true" ] && [ -n "$DEBUG_LOG_FILE" ]; then
+    echo "" >> "$DEBUG_LOG_FILE"
+    echo "===============================================================================" >> "$DEBUG_LOG_FILE"
+    echo "Export Completed: $(date -Iseconds 2>/dev/null || date)" >> "$DEBUG_LOG_FILE"
+    echo "Total Errors: $STATS_ERRORS" >> "$DEBUG_LOG_FILE"
+    echo "Total API Calls: $STATS_API_CALLS" >> "$DEBUG_LOG_FILE"
+    echo "Total Retries: $STATS_API_RETRIES" >> "$DEBUG_LOG_FILE"
+    echo "===============================================================================" >> "$DEBUG_LOG_FILE"
+
+    echo -e "${GREEN}[DEBUG] Debug log saved to: $DEBUG_LOG_FILE${NC}"
+  fi
+}
+
 # Prompt for yes/no with default
 prompt_yn() {
   local prompt="$1"
   local default="${2:-Y}"
   local answer
+
+  # If NON_INTERACTIVE is set, return based on default (skip prompts)
+  if [ "$NON_INTERACTIVE" = "true" ]; then
+    echo -e "${DIM}[AUTO] $prompt: ${default}${NC}"
+    case "$default" in
+      Y|y|yes) return 0 ;;
+      *) return 1 ;;
+    esac
+  fi
 
   if [ "$default" = "Y" ]; then
     echo -ne "${YELLOW}$prompt (Y/n): ${NC}"
@@ -827,8 +991,10 @@ api_call() {
   local retries=0
   local response=""
   local http_code=""
+  local start_time=$(date +%s%3N 2>/dev/null || date +%s)
 
   ((STATS_API_CALLS++))
+  debug_log "API" "→ $method $endpoint"
 
   # Check total runtime limit
   local current_time=$(date +%s)
@@ -885,6 +1051,11 @@ api_call() {
     response=$(cat "$tmp_file")
     rm -f "$tmp_file"
 
+    local end_time=$(date +%s%3N 2>/dev/null || date +%s)
+    local duration=$((end_time - start_time))
+    local response_size=${#response}
+    debug_api_call "$method" "$endpoint" "$http_code" "$response_size" "$duration"
+
     case "$http_code" in
       200|201)
         # Success
@@ -894,6 +1065,7 @@ api_call() {
         ;;
       000)
         # Timeout or connection error
+        debug_log "WARN" "Timeout/connection error on $endpoint"
         ((retries++))
         ((STATS_API_RETRIES++))
         local delay=$((retries * 2))
@@ -902,6 +1074,7 @@ api_call() {
         ;;
       429)
         # Rate limited
+        debug_log "WARN" "Rate limited (429) on $endpoint"
         ((STATS_RATE_LIMITS++))
         ((STATS_API_RETRIES++))
         ((retries++))
@@ -913,20 +1086,24 @@ api_call() {
         sleep "$wait_time"
         ;;
       401)
+        debug_log "ERROR" "Auth failed (401) on $endpoint"
         ((STATS_API_FAILURES++))
         error "Authentication failed (401). Please check your credentials."
         return 1
         ;;
       403)
+        debug_log "ERROR" "Access forbidden (403) on $endpoint"
         ((STATS_API_FAILURES++))
         error "Access forbidden (403) for: $endpoint. Check user capabilities."
         return 1
         ;;
       404)
+        debug_log "WARN" "Not found (404) on $endpoint"
         warning "Resource not found (404): $endpoint"
         return 1
         ;;
       500|502|503)
+        debug_log "WARN" "Server error ($http_code) on $endpoint"
         ((retries++))
         ((STATS_API_RETRIES++))
         local wait_time=$((retries * 2))
@@ -1276,7 +1453,10 @@ check_capabilities() {
 # =============================================================================
 
 show_banner() {
-  clear
+  # Only clear screen in interactive mode (when running in a terminal)
+  if [ -t 0 ] && [ -t 1 ] && [ "$NON_INTERACTIVE" != "true" ]; then
+    clear
+  fi
   echo ""
   echo -e "${CYAN}╔══════════════════════════════════════════════════════════════════════════════╗${NC}"
   echo -e "${CYAN}║${NC}                                                                                ${CYAN}║${NC}"
@@ -1291,6 +1471,9 @@ show_banner() {
   echo -e "${CYAN}║${NC}                                                                                ${CYAN}║${NC}"
   echo -e "${CYAN}║${NC}          ${DIM}Complete REST API-Based Data Collection for Migration${NC}              ${CYAN}║${NC}"
   echo -e "${CYAN}║${NC}                        ${DIM}Version $SCRIPT_VERSION${NC}                                    ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}                                                                                ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}   ${DIM}Developed for Dynatrace One by Enterprise Solutions & Architecture${NC}      ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}                  ${DIM}An ACE Services Division of Dynatrace${NC}                        ${CYAN}║${NC}"
   echo -e "${CYAN}║${NC}                                                                                ${CYAN}║${NC}"
   echo -e "${CYAN}╚══════════════════════════════════════════════════════════════════════════════╝${NC}"
   echo ""
@@ -1661,6 +1844,14 @@ detect_environment() {
 select_applications() {
   print_box_header "STEP 4: APPLICATION SELECTION"
 
+  # If apps were pre-selected via --apps flag, skip interactive selection
+  if [ "$EXPORT_ALL_APPS" = "false" ] && [ ${#SELECTED_APPS[@]} -gt 0 ]; then
+    success "Using pre-selected apps from --apps flag: ${SELECTED_APPS[*]}"
+    STATS_APPS=${#SELECTED_APPS[@]}
+    print_box_footer
+    return 0
+  fi
+
   print_why_box \
     "Splunk organizes content into 'apps'. Each app can contain:" \
     "  • Dashboards and visualizations" \
@@ -1938,6 +2129,9 @@ setup_export_directory() {
   log "Export started: $EXPORT_NAME"
   log "Stack: $SPLUNK_STACK"
   log "Version: $SPLUNK_VERSION"
+
+  # Initialize debug logging if enabled
+  init_debug_log
 }
 
 collect_system_info() {
@@ -2022,18 +2216,26 @@ collect_dashboards() {
 
     # Get dashboards for this app
     local app_dashboards
-    app_dashboards=$(api_call "/servicesNS/-/$app/data/ui/views" "GET" "output_mode=json&count=0")
+    # Use search parameter to filter dashboards that BELONG to this app (not just visible from it)
+    # The eai:acl.app field indicates which app owns the dashboard
+    app_dashboards=$(api_call "/servicesNS/-/$app/data/ui/views" "GET" "output_mode=json&count=0&search=eai:acl.app=$app")
 
     if [ $? -eq 0 ]; then
       echo "$app_dashboards" > "$EXPORT_DIR/$app/dashboards/dashboard_list.json"
 
-      # Extract dashboard names and get full definitions
+      # Extract dashboard names - only from dashboards owned by this app
       local names
       if $HAS_JQ; then
-        names=$(echo "$app_dashboards" | jq -r '.entry[].name' 2>/dev/null)
+        # Filter to only dashboards where acl.app matches the target app
+        names=$(echo "$app_dashboards" | jq -r --arg app "$app" '.entry[] | select(.acl.app == $app) | .name' 2>/dev/null)
       else
+        # Fallback: extract names but may include inherited dashboards
+        # The API search parameter should have already filtered them
         names=$(echo "$app_dashboards" | grep -oP '"name"\s*:\s*"\K[^"]+')
       fi
+
+      local dash_count=$(echo "$names" | grep -c . 2>/dev/null || echo "0")
+      echo "  App: $app ($dash_count dashboards)"
 
       while IFS= read -r name; do
         if [ -n "$name" ]; then
@@ -2107,11 +2309,9 @@ try:
         parsed = json.loads(json_content)
         with open('$definition_file', 'w') as out:
             json.dump(parsed, out, indent=2)
-        print('extracted')
-    else:
-        print('no-definition')
+        # Silent success - bash will check if file exists
 except Exception as e:
-    print(f'error: {e}')
+    pass  # Silent failure - bash will handle missing file
 " 2>/dev/null
 
                 if [ -f "$definition_file" ]; then
@@ -2122,11 +2322,13 @@ except Exception as e:
               fi
 
               log "Exported Dashboard Studio: $name"
+              echo "    → Studio: $name"
             else
               # Classic dashboard (pure XML without Dashboard Studio reference)
               cp "$EXPORT_DIR/$app/dashboards/${name}.json" "$EXPORT_DIR/dashboards_classic/"
               ((classic_count++))
               log "Exported Classic Dashboard: $name"
+              echo "    → Classic: $name"
             fi
           fi
         fi
@@ -2176,38 +2378,141 @@ collect_rbac() {
 
   progress "Collecting users and roles..."
 
-  # Users
   local response
-  response=$(api_call "/services/authentication/users" "GET" "output_mode=json&count=0")
-  if [ $? -eq 0 ]; then
-    echo "$response" > "$EXPORT_DIR/dynabridge_analytics/rbac/users.json"
 
-    if $HAS_JQ; then
-      STATS_USERS=$(echo "$response" | jq '.entry | length' 2>/dev/null)
-    else
-      STATS_USERS=$(echo "$response" | grep -c '"name"')
+  # =========================================================================
+  # PERFORMANCE OPTIMIZATION: App-scoped user collection
+  # In large environments (15K+ users), collecting all users is extremely slow.
+  # When scoped to specific apps, we skip the full user list and only collect:
+  # 1. Users who have accessed the selected apps (from _audit)
+  # 2. Roles (needed for permission analysis)
+  # =========================================================================
+  if [ "$SCOPE_TO_APPS" = "true" ] && [ ${#SELECTED_APPS[@]} -gt 0 ]; then
+    info "App-scoped mode: Collecting users who accessed selected apps only"
+    info "  → Skipping full user list (saves significant time in large environments)"
+
+    # Collect only users who have accessed the selected apps (much faster)
+    local app_filter=$(get_app_filter "app")
+    if [ -n "$app_filter" ]; then
+      # Use a search to find users who accessed these apps in the usage period
+      local user_search="search index=_audit action=search ${app_filter} earliest=-${USAGE_PERIOD} | stats count as activity, latest(_time) as last_active by user | sort -activity"
+      run_analytics_search "$user_search" "$EXPORT_DIR/dynabridge_analytics/rbac/users_active_in_apps.json" "Users active in selected apps"
+
+      # Count users from the result
+      if [ -f "$EXPORT_DIR/dynabridge_analytics/rbac/users_active_in_apps.json" ] && $HAS_JQ; then
+        STATS_USERS=$(jq '.results | length // 0' "$EXPORT_DIR/dynabridge_analytics/rbac/users_active_in_apps.json" 2>/dev/null || echo "0")
+        success "Collected $STATS_USERS users with activity in selected apps"
+      fi
     fi
-    success "Collected $STATS_USERS users"
+
+    # Create a placeholder for full users.json explaining the scoped collection
+    echo "{\"scoped\": true, \"reason\": \"App-scoped mode - only users with activity in selected apps collected\", \"apps\": [$(printf '\"%s\",' "${SELECTED_APPS[@]}" | sed 's/,$//')]}" > "$EXPORT_DIR/dynabridge_analytics/rbac/users.json"
+
+  else
+    # Full collection mode - get all users
+    response=$(api_call "/services/authentication/users" "GET" "output_mode=json&count=0")
+    if [ $? -eq 0 ]; then
+      echo "$response" > "$EXPORT_DIR/dynabridge_analytics/rbac/users.json"
+
+      if $HAS_JQ; then
+        STATS_USERS=$(echo "$response" | jq '.entry | length' 2>/dev/null)
+      else
+        STATS_USERS=$(echo "$response" | grep -c '"name"')
+      fi
+      success "Collected $STATS_USERS users"
+    fi
   fi
 
-  # Roles
+  # Roles - always collect (relatively small dataset)
   response=$(api_call "/services/authorization/roles" "GET" "output_mode=json&count=0")
   if [ $? -eq 0 ]; then
     echo "$response" > "$EXPORT_DIR/dynabridge_analytics/rbac/roles.json"
     log "Collected roles"
   fi
 
-  # SAML groups (may not be available)
-  response=$(api_call "/services/admin/SAML-groups" "GET" "output_mode=json")
-  if [ $? -eq 0 ]; then
-    echo "$response" > "$EXPORT_DIR/dynabridge_analytics/rbac/saml_groups.json"
-    log "Collected SAML groups"
+  # SAML groups (may not be available) - skip in scoped mode
+  if [ "$SCOPE_TO_APPS" != "true" ]; then
+    response=$(api_call "/services/admin/SAML-groups" "GET" "output_mode=json")
+    if [ $? -eq 0 ]; then
+      echo "$response" > "$EXPORT_DIR/dynabridge_analytics/rbac/saml_groups.json"
+      log "Collected SAML groups"
+    fi
   fi
 
-  # Current user context
+  # Current user context - always useful
   response=$(api_call "/services/authentication/current-context" "GET" "output_mode=json")
   if [ $? -eq 0 ]; then
     echo "$response" > "$EXPORT_DIR/dynabridge_analytics/rbac/current_context.json"
+  fi
+}
+
+# =============================================================================
+# APP-SCOPED FILTER HELPERS
+# =============================================================================
+
+# Build SPL filter for selected apps
+# Usage: get_app_filter "app" -> (app="app1" OR app="app2")
+# Usage: get_app_filter "eai:acl.app" -> (eai:acl.app="app1" OR eai:acl.app="app2")
+get_app_filter() {
+  local field="${1:-app}"
+
+  if [ "$SCOPE_TO_APPS" != "true" ] || [ ${#SELECTED_APPS[@]} -eq 0 ]; then
+    # No filtering - return empty string
+    echo ""
+    return
+  fi
+
+  # Build OR clause: (app="app1" OR app="app2" OR ...)
+  local filter="("
+  local first=true
+  for app in "${SELECTED_APPS[@]}"; do
+    if [ "$first" = "true" ]; then
+      filter+="${field}=\"${app}\""
+      first=false
+    else
+      filter+=" OR ${field}=\"${app}\""
+    fi
+  done
+  filter+=")"
+
+  echo "$filter"
+}
+
+# Build SPL IN clause for selected apps
+# Usage: get_app_in_clause "app" -> app IN ("app1", "app2")
+get_app_in_clause() {
+  local field="${1:-app}"
+
+  if [ "$SCOPE_TO_APPS" != "true" ] || [ ${#SELECTED_APPS[@]} -eq 0 ]; then
+    echo ""
+    return
+  fi
+
+  # Build IN clause: app IN ("app1", "app2", ...)
+  local apps_quoted=""
+  local first=true
+  for app in "${SELECTED_APPS[@]}"; do
+    if [ "$first" = "true" ]; then
+      apps_quoted+="\"${app}\""
+      first=false
+    else
+      apps_quoted+=", \"${app}\""
+    fi
+  done
+
+  echo "${field} IN (${apps_quoted})"
+}
+
+# Build where clause for pipe filtering
+# Usage: get_app_where_clause "app" -> | where app IN ("app1", "app2")
+get_app_where_clause() {
+  local field="${1:-app}"
+  local in_clause=$(get_app_in_clause "$field")
+
+  if [ -n "$in_clause" ]; then
+    echo "| where $in_clause"
+  else
+    echo ""
   fi
 }
 
@@ -2223,26 +2528,60 @@ collect_usage_analytics() {
   echo "  ${WHITE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
   echo ""
 
+  # Splunk Cloud limitation warning
+  if [ "$SKIP_INTERNAL" = "true" ]; then
+    echo "  ${YELLOW}⚠ SPLUNK CLOUD MODE: Skipping _internal index searches${NC}"
+    echo "  ${DIM}  Some analytics (scheduler, volume, ingestion) will be limited.${NC}"
+    echo "  ${DIM}  Dashboard views and user activity from _audit will still be collected.${NC}"
+    echo ""
+  fi
+
+  # Build app filter for scoped mode
+  local app_filter=""
+  local app_where=""
+  if [ "$SCOPE_TO_APPS" = "true" ] && [ ${#SELECTED_APPS[@]} -gt 0 ]; then
+    app_filter=$(get_app_filter "app")
+    app_where=$(get_app_where_clause "app")
+    echo "  ${CYAN}ℹ APP-SCOPED ANALYTICS: Filtering to ${#SELECTED_APPS[@]} app(s)${NC}"
+    echo "  ${DIM}  Apps: ${SELECTED_APPS[*]}${NC}"
+    echo ""
+  fi
+
   # =========================================================================
   # CATEGORY 1: DASHBOARD VIEW STATISTICS
+  # Uses _audit index with search_type=dashboard - tracks dashboard-triggered searches
+  # Note: _internal index is NOT accessible in Splunk Cloud (even for admins)
+  # Note: action=dashboard_view does NOT exist - that was a documentation error
   # =========================================================================
   progress "Collecting dashboard view statistics..."
 
-  # Top 100 most viewed dashboards
+  # Top 100 most viewed dashboards (via dashboard-triggered searches)
+  # When users load a dashboard, it triggers searches - these are logged with search_type=dashboard
+  # Excludes splunk-system-user (system account for scheduled searches)
+  local app_search_filter=""
+  if [ -n "$app_filter" ]; then
+    app_search_filter="$app_filter "
+  fi
   run_analytics_search \
-    "search index=_audit action=dashboard_view earliest=-${USAGE_PERIOD} | stats count as views by dashboard, app | sort -views | head 100" \
+    "search index=_audit action=search info=granted search_type=dashboard ${app_search_filter}earliest=-${USAGE_PERIOD} | where user!=\"splunk-system-user\" | stats count as view_count, dc(user) as unique_users, latest(_time) as last_viewed by app, savedsearch_name | rename savedsearch_name as dashboard | where isnotnull(dashboard) | sort -view_count | head 100" \
     "$EXPORT_DIR/dynabridge_analytics/usage_analytics/dashboard_views_top100.json" \
     "Top 100 viewed dashboards"
 
-  # Dashboard view trends (weekly breakdown)
+  # Dashboard view trends (weekly breakdown via _audit)
   run_analytics_search \
-    "search index=_audit action=dashboard_view earliest=-${USAGE_PERIOD} | timechart span=1w count by dashboard | head 50" \
+    "search index=_audit action=search info=granted search_type=dashboard ${app_search_filter}earliest=-${USAGE_PERIOD} | where user!=\"splunk-system-user\" | bucket _time span=1w | stats count as views by _time, app, savedsearch_name | rename savedsearch_name as dashboard | where isnotnull(dashboard) | sort -_time | head 200" \
     "$EXPORT_DIR/dynabridge_analytics/usage_analytics/dashboard_views_trend.json" \
     "Dashboard view trends"
 
-  # Dashboards never viewed in period
+  # Dashboards never viewed in period (compare REST list vs audit records)
+  # Note: This counts all views including system user to be conservative about "never viewed"
+  # For scoped mode, filter the REST output by app
+  local rest_app_filter=""
+  if [ -n "$app_where" ]; then
+    rest_app_filter="$app_where"
+  fi
   run_analytics_search \
-    "search index=_audit action=dashboard_view earliest=-${USAGE_PERIOD} | stats count by dashboard | append [| rest /servicesNS/-/-/data/ui/views | table title | rename title as dashboard] | stats sum(count) as views by dashboard | where views=0 OR isnull(views)" \
+    "| rest /servicesNS/-/-/data/ui/views | rename title as dashboard, eai:acl.app as app | table dashboard, app $rest_app_filter | join type=left dashboard [search index=_audit action=search search_type=dashboard ${app_search_filter}earliest=-${USAGE_PERIOD} | where user!=\"splunk-system-user\" | stats count as views by savedsearch_name | rename savedsearch_name as dashboard] | where isnull(views) OR views=0 | table dashboard, app" \
     "$EXPORT_DIR/dynabridge_analytics/usage_analytics/dashboards_never_viewed.json" \
     "Never viewed dashboards"
 
@@ -2250,30 +2589,34 @@ collect_usage_analytics() {
 
   # =========================================================================
   # CATEGORY 2: USER ACTIVITY METRICS
+  # Note: Excludes splunk-system-user (system account for scheduled searches)
+  # In scoped mode, only counts activity within selected apps
   # =========================================================================
   progress "Collecting user activity metrics..."
 
-  # Most active users by search count
+  # Most active users by search count (excluding system user)
+  # In scoped mode: only counts searches in selected apps
   run_analytics_search \
-    "search index=_audit action=search earliest=-${USAGE_PERIOD} | stats count as searches, dc(search) as unique_searches, latest(_time) as last_active by user | sort -searches | head 100" \
+    "search index=_audit action=search ${app_search_filter}earliest=-${USAGE_PERIOD} | where user!=\"splunk-system-user\" | stats count as searches, dc(search) as unique_searches, latest(_time) as last_active by user | sort -searches | head 100" \
     "$EXPORT_DIR/dynabridge_analytics/usage_analytics/users_most_active.json" \
     "Most active users"
 
-  # Activity by role
+  # Activity by role (excluding system user)
   run_analytics_search \
-    "search index=_audit action=search earliest=-${USAGE_PERIOD} | stats count by user | join user [| rest /services/authentication/users | rename title as user | table user, roles] | stats sum(count) as searches by roles" \
+    "search index=_audit action=search ${app_search_filter}earliest=-${USAGE_PERIOD} | where user!=\"splunk-system-user\" | stats count by user | join user [| rest /services/authentication/users | rename title as user | table user, roles] | stats sum(count) as searches by roles" \
     "$EXPORT_DIR/dynabridge_analytics/usage_analytics/activity_by_role.json" \
     "Activity by role"
 
-  # Users with no activity in period
+  # Users with no activity in period (excluding system user from results)
+  # In scoped mode: only checks for activity in selected apps
   run_analytics_search \
-    "| rest /services/authentication/users | rename title as user | table user, realname, email | join type=left user [search index=_audit action=search earliest=-${USAGE_PERIOD} | stats count by user] | where isnull(count) | table user, realname, email" \
+    "| rest /services/authentication/users | rename title as user | where user!=\"splunk-system-user\" | table user, realname, email | join type=left user [search index=_audit action=search ${app_search_filter}earliest=-${USAGE_PERIOD} | stats count by user] | where isnull(count) | table user, realname, email" \
     "$EXPORT_DIR/dynabridge_analytics/usage_analytics/users_inactive.json" \
     "Inactive users"
 
-  # Daily active users trend
+  # Daily active users trend (excluding system user)
   run_analytics_search \
-    "search index=_audit action=search earliest=-${USAGE_PERIOD} | timechart span=1d dc(user) as daily_active_users" \
+    "search index=_audit action=search ${app_search_filter}earliest=-${USAGE_PERIOD} | where user!=\"splunk-system-user\" | timechart span=1d dc(user) as daily_active_users" \
     "$EXPORT_DIR/dynabridge_analytics/usage_analytics/daily_active_users.json" \
     "Daily active users"
 
@@ -2281,67 +2624,85 @@ collect_usage_analytics() {
 
   # =========================================================================
   # CATEGORY 3: ALERT EXECUTION STATISTICS
+  # Note: These require _internal index which may be restricted in Splunk Cloud
+  # In scoped mode: filter alerts by app
   # =========================================================================
-  progress "Collecting alert execution statistics..."
+  if [ "$SKIP_INTERNAL" = "true" ]; then
+    info "Skipping alert execution statistics (_internal index restricted)"
+    # Create placeholder files explaining the skip
+    echo '{"skipped": true, "reason": "_internal index not accessible in Splunk Cloud", "alternative": "Check Monitoring Console in Splunk Cloud for scheduler statistics"}' > "$EXPORT_DIR/dynabridge_analytics/usage_analytics/alerts_most_fired.json"
+    echo '{"skipped": true, "reason": "_internal index not accessible"}' > "$EXPORT_DIR/dynabridge_analytics/usage_analytics/alerts_with_actions.json"
+    echo '{"skipped": true, "reason": "_internal index not accessible"}' > "$EXPORT_DIR/dynabridge_analytics/usage_analytics/alerts_failed.json"
+    echo '{"skipped": true, "reason": "_internal index not accessible"}' > "$EXPORT_DIR/dynabridge_analytics/usage_analytics/alerts_never_fired.json"
+    echo '{"skipped": true, "reason": "_internal index not accessible"}' > "$EXPORT_DIR/dynabridge_analytics/usage_analytics/alert_firing_trend.json"
+  else
+    progress "Collecting alert execution statistics..."
 
-  # Most fired alerts
-  run_analytics_search \
-    "search index=_internal sourcetype=scheduler status=success savedsearch_name=* earliest=-${USAGE_PERIOD} | stats count as executions, latest(_time) as last_run by savedsearch_name, app | sort -executions | head 100" \
-    "$EXPORT_DIR/dynabridge_analytics/usage_analytics/alerts_most_fired.json" \
-    "Most fired alerts"
+    # Most fired alerts - in scoped mode, filter by app
+    run_analytics_search \
+      "search index=_internal sourcetype=scheduler status=success savedsearch_name=* ${app_search_filter}earliest=-${USAGE_PERIOD} | stats count as executions, latest(_time) as last_run by savedsearch_name, app | sort -executions | head 100" \
+      "$EXPORT_DIR/dynabridge_analytics/usage_analytics/alerts_most_fired.json" \
+      "Most fired alerts"
 
-  # Alerts with triggered actions
-  run_analytics_search \
-    "search index=_internal sourcetype=scheduler result_count>0 earliest=-${USAGE_PERIOD} | stats count as triggers, sum(result_count) as total_results by savedsearch_name | sort -triggers | head 50" \
-    "$EXPORT_DIR/dynabridge_analytics/usage_analytics/alerts_with_actions.json" \
-    "Alerts with actions"
+    # Alerts with triggered actions
+    run_analytics_search \
+      "search index=_internal sourcetype=scheduler result_count>0 ${app_search_filter}earliest=-${USAGE_PERIOD} | stats count as triggers, sum(result_count) as total_results by savedsearch_name, app | sort -triggers | head 50" \
+      "$EXPORT_DIR/dynabridge_analytics/usage_analytics/alerts_with_actions.json" \
+      "Alerts with actions"
 
-  # Failed alert executions
-  run_analytics_search \
-    "search index=_internal sourcetype=scheduler status=failed earliest=-${USAGE_PERIOD} | stats count as failures, latest(_time) as last_failure by savedsearch_name, app | sort -failures" \
-    "$EXPORT_DIR/dynabridge_analytics/usage_analytics/alerts_failed.json" \
-    "Failed alerts"
+    # Failed alert executions
+    run_analytics_search \
+      "search index=_internal sourcetype=scheduler status=failed ${app_search_filter}earliest=-${USAGE_PERIOD} | stats count as failures, latest(_time) as last_failure by savedsearch_name, app | sort -failures" \
+      "$EXPORT_DIR/dynabridge_analytics/usage_analytics/alerts_failed.json" \
+      "Failed alerts"
 
-  # Alerts that never fired
-  run_analytics_search \
-    "| rest /servicesNS/-/-/saved/searches | search is_scheduled=1 | rename title as savedsearch_name | table savedsearch_name, eai:acl.app | join type=left savedsearch_name [search index=_internal sourcetype=scheduler earliest=-${USAGE_PERIOD} | stats count by savedsearch_name] | where isnull(count) | table savedsearch_name, eai:acl.app" \
-    "$EXPORT_DIR/dynabridge_analytics/usage_analytics/alerts_never_fired.json" \
-    "Never fired alerts"
+    # Alerts that never fired - in scoped mode, filter REST results by app
+    local alerts_rest_filter=""
+    if [ -n "$app_where" ]; then
+      # Use eai:acl.app for REST endpoint filtering
+      alerts_rest_filter=$(get_app_where_clause "eai:acl.app")
+    fi
+    run_analytics_search \
+      "| rest /servicesNS/-/-/saved/searches | search is_scheduled=1 | rename title as savedsearch_name $alerts_rest_filter | table savedsearch_name, eai:acl.app | join type=left savedsearch_name [search index=_internal sourcetype=scheduler ${app_search_filter}earliest=-${USAGE_PERIOD} | stats count by savedsearch_name] | where isnull(count) | table savedsearch_name, eai:acl.app" \
+      "$EXPORT_DIR/dynabridge_analytics/usage_analytics/alerts_never_fired.json" \
+      "Never fired alerts"
 
-  # Alert firing trend
-  run_analytics_search \
-    "search index=_internal sourcetype=scheduler status=success earliest=-${USAGE_PERIOD} | timechart span=1d count by savedsearch_name | head 20" \
-    "$EXPORT_DIR/dynabridge_analytics/usage_analytics/alert_firing_trend.json" \
-    "Alert firing trend"
+    # Alert firing trend
+    run_analytics_search \
+      "search index=_internal sourcetype=scheduler status=success ${app_search_filter}earliest=-${USAGE_PERIOD} | timechart span=1d count by savedsearch_name | head 20" \
+      "$EXPORT_DIR/dynabridge_analytics/usage_analytics/alert_firing_trend.json" \
+      "Alert firing trend"
 
-  success "Alert statistics collected"
+    success "Alert statistics collected"
+  fi
 
   # =========================================================================
   # CATEGORY 4: SEARCH USAGE PATTERNS
+  # In scoped mode: filter searches by app
   # =========================================================================
   progress "Collecting search usage patterns..."
 
-  # Most used search commands
+  # Most used search commands - in scoped mode, only from selected apps
   run_analytics_search \
-    "search index=_audit action=search earliest=-${USAGE_PERIOD} | rex field=search \"\\|\\s*(?<command>\\w+)\" | stats count by command | sort -count | head 50" \
+    "search index=_audit action=search ${app_search_filter}earliest=-${USAGE_PERIOD} | rex field=search \"\\|\\s*(?<command>\\w+)\" | stats count by command | sort -count | head 50" \
     "$EXPORT_DIR/dynabridge_analytics/usage_analytics/search_commands_popular.json" \
     "Popular search commands"
 
   # Search types breakdown
   run_analytics_search \
-    "search index=_audit action=search earliest=-${USAGE_PERIOD} | stats count by search_type | sort -count" \
+    "search index=_audit action=search ${app_search_filter}earliest=-${USAGE_PERIOD} | stats count by search_type | sort -count" \
     "$EXPORT_DIR/dynabridge_analytics/usage_analytics/search_by_type.json" \
     "Search by type"
 
   # Slow searches
   run_analytics_search \
-    "search index=_audit action=search total_run_time>30 earliest=-${USAGE_PERIOD} | stats avg(total_run_time) as avg_time, count as runs by search | sort -avg_time | head 50" \
+    "search index=_audit action=search total_run_time>30 ${app_search_filter}earliest=-${USAGE_PERIOD} | stats avg(total_run_time) as avg_time, count as runs by search, app | sort -avg_time | head 50" \
     "$EXPORT_DIR/dynabridge_analytics/usage_analytics/searches_slow.json" \
     "Slow searches"
 
-  # Most searched indexes
+  # Most searched indexes - in scoped mode, only from searches in selected apps
   run_analytics_search \
-    "search index=_audit action=search earliest=-${USAGE_PERIOD} | rex field=search \"index\\s*=\\s*(?<searched_index>\\w+)\" | stats count by searched_index | sort -count | head 30" \
+    "search index=_audit action=search ${app_search_filter}earliest=-${USAGE_PERIOD} | rex field=search \"index\\s*=\\s*(?<searched_index>\\w+)\" | stats count by searched_index | sort -count | head 30" \
     "$EXPORT_DIR/dynabridge_analytics/usage_analytics/indexes_searched.json" \
     "Indexes searched"
 
@@ -2352,80 +2713,100 @@ collect_usage_analytics() {
   # =========================================================================
   progress "Collecting data source usage..."
 
-  # Most searched sourcetypes
+  # Most searched sourcetypes (uses _audit - works in Cloud) - scoped to apps
   run_analytics_search \
-    "search index=_audit action=search earliest=-${USAGE_PERIOD} | rex field=search \"sourcetype\\s*=\\s*(?<st>\\w+)\" | stats count by st | sort -count | head 30" \
+    "search index=_audit action=search ${app_search_filter}earliest=-${USAGE_PERIOD} | rex field=search \"sourcetype\\s*=\\s*(?<st>\\w+)\" | stats count by st | sort -count | head 30" \
     "$EXPORT_DIR/dynabridge_analytics/usage_analytics/sourcetypes_searched.json" \
     "Sourcetypes searched"
 
-  # Index query patterns
-  run_analytics_search \
-    "search index=_internal source=*metrics.log group=per_index_thruput earliest=-${USAGE_PERIOD} | stats sum(kb) as total_kb, avg(ev) as avg_events by series | eval total_gb=round(total_kb/1024/1024,2) | sort -total_gb | head 30" \
-    "$EXPORT_DIR/dynabridge_analytics/usage_analytics/indexes_queried.json" \
-    "Indexes queried"
-
-  # Index size and event counts
+  # Index size and event counts (REST API - works in Cloud)
   run_analytics_search \
     "| rest /services/data/indexes | table title, currentDBSizeMB, totalEventCount, maxTime, minTime | sort -currentDBSizeMB" \
     "$EXPORT_DIR/dynabridge_analytics/usage_analytics/index_sizes.json" \
     "Index sizes"
 
+  if [ "$SKIP_INTERNAL" = "true" ]; then
+    info "Skipping index query patterns (_internal index restricted)"
+    echo '{"skipped": true, "reason": "_internal index not accessible in Splunk Cloud"}' > "$EXPORT_DIR/dynabridge_analytics/usage_analytics/indexes_queried.json"
+  else
+    # Index query patterns (requires _internal)
+    run_analytics_search \
+      "search index=_internal source=*metrics.log group=per_index_thruput earliest=-${USAGE_PERIOD} | stats sum(kb) as total_kb, avg(ev) as avg_events by series | eval total_gb=round(total_kb/1024/1024,2) | sort -total_gb | head 30" \
+      "$EXPORT_DIR/dynabridge_analytics/usage_analytics/indexes_queried.json" \
+      "Indexes queried"
+  fi
+
   success "Data source usage collected"
 
   # =========================================================================
   # CATEGORY 5b: DAILY VOLUME ANALYSIS (Critical for capacity planning)
+  # Note: These all require _internal index which is restricted in Splunk Cloud
   # =========================================================================
-  progress "Collecting daily volume statistics (last 30 days)..."
+  if [ "$SKIP_INTERNAL" = "true" ]; then
+    info "Skipping daily volume statistics (_internal index restricted)"
+    info "  → Use Splunk Cloud Monitoring Console for license usage data"
+    # Create placeholder files
+    echo '{"skipped": true, "reason": "_internal index not accessible in Splunk Cloud", "alternative": "Use Monitoring Console > License Usage"}' > "$EXPORT_DIR/dynabridge_analytics/usage_analytics/daily_volume_by_index.json"
+    echo '{"skipped": true, "reason": "_internal index not accessible"}' > "$EXPORT_DIR/dynabridge_analytics/usage_analytics/daily_volume_by_sourcetype.json"
+    echo '{"skipped": true, "reason": "_internal index not accessible"}' > "$EXPORT_DIR/dynabridge_analytics/usage_analytics/daily_volume_summary.json"
+    echo '{"skipped": true, "reason": "_internal index not accessible"}' > "$EXPORT_DIR/dynabridge_analytics/usage_analytics/daily_events_by_index.json"
+    echo '{"skipped": true, "reason": "_internal index not accessible"}' > "$EXPORT_DIR/dynabridge_analytics/usage_analytics/hourly_volume_pattern.json"
+    echo '{"skipped": true, "reason": "_internal index not accessible"}' > "$EXPORT_DIR/dynabridge_analytics/usage_analytics/top_indexes_by_volume.json"
+    echo '{"skipped": true, "reason": "_internal index not accessible"}' > "$EXPORT_DIR/dynabridge_analytics/usage_analytics/top_sourcetypes_by_volume.json"
+    echo '{"skipped": true, "reason": "_internal index not accessible"}' > "$EXPORT_DIR/dynabridge_analytics/usage_analytics/top_hosts_by_volume.json"
+  else
+    progress "Collecting daily volume statistics (last 30 days)..."
 
-  # Daily volume by index (GB per day)
-  run_analytics_search \
-    "search index=_internal source=*license_usage.log type=Usage earliest=-30d@d | timechart span=1d sum(b) as bytes by idx | eval gb=round(bytes/1024/1024/1024,2) | fields _time, idx, gb" \
-    "$EXPORT_DIR/dynabridge_analytics/usage_analytics/daily_volume_by_index.json" \
-    "Daily volume by index (GB)"
+    # Daily volume by index (GB per day)
+    run_analytics_search \
+      "search index=_internal source=*license_usage.log type=Usage earliest=-30d@d | timechart span=1d sum(b) as bytes by idx | eval gb=round(bytes/1024/1024/1024,2) | fields _time, idx, gb" \
+      "$EXPORT_DIR/dynabridge_analytics/usage_analytics/daily_volume_by_index.json" \
+      "Daily volume by index (GB)"
 
-  # Daily volume by sourcetype
-  run_analytics_search \
-    "search index=_internal source=*license_usage.log type=Usage earliest=-30d@d | timechart span=1d sum(b) as bytes by st | eval gb=round(bytes/1024/1024/1024,2) | fields _time, st, gb" \
-    "$EXPORT_DIR/dynabridge_analytics/usage_analytics/daily_volume_by_sourcetype.json" \
-    "Daily volume by sourcetype (GB)"
+    # Daily volume by sourcetype
+    run_analytics_search \
+      "search index=_internal source=*license_usage.log type=Usage earliest=-30d@d | timechart span=1d sum(b) as bytes by st | eval gb=round(bytes/1024/1024/1024,2) | fields _time, st, gb" \
+      "$EXPORT_DIR/dynabridge_analytics/usage_analytics/daily_volume_by_sourcetype.json" \
+      "Daily volume by sourcetype (GB)"
 
-  # Total daily volume (for licensing)
-  run_analytics_search \
-    "search index=_internal source=*license_usage.log type=Usage earliest=-30d@d | timechart span=1d sum(b) as bytes | eval gb=round(bytes/1024/1024/1024,2) | stats avg(gb) as avg_daily_gb, max(gb) as peak_daily_gb, sum(gb) as total_30d_gb" \
-    "$EXPORT_DIR/dynabridge_analytics/usage_analytics/daily_volume_summary.json" \
-    "Daily volume summary"
+    # Total daily volume (for licensing)
+    run_analytics_search \
+      "search index=_internal source=*license_usage.log type=Usage earliest=-30d@d | timechart span=1d sum(b) as bytes | eval gb=round(bytes/1024/1024/1024,2) | stats avg(gb) as avg_daily_gb, max(gb) as peak_daily_gb, sum(gb) as total_30d_gb" \
+      "$EXPORT_DIR/dynabridge_analytics/usage_analytics/daily_volume_summary.json" \
+      "Daily volume summary"
 
-  # Daily event count by index
-  run_analytics_search \
-    "search index=_internal source=*metrics.log group=per_index_thruput earliest=-30d@d | timechart span=1d sum(ev) as events by series | rename series as index" \
-    "$EXPORT_DIR/dynabridge_analytics/usage_analytics/daily_events_by_index.json" \
-    "Daily event counts by index"
+    # Daily event count by index
+    run_analytics_search \
+      "search index=_internal source=*metrics.log group=per_index_thruput earliest=-30d@d | timechart span=1d sum(ev) as events by series | rename series as index" \
+      "$EXPORT_DIR/dynabridge_analytics/usage_analytics/daily_events_by_index.json" \
+      "Daily event counts by index"
 
-  # Hourly pattern analysis (to identify peak hours)
-  run_analytics_search \
-    "search index=_internal source=*license_usage.log type=Usage earliest=-7d | eval hour=strftime(_time, \"%H\") | stats sum(b) as bytes by hour | eval gb=round(bytes/1024/1024/1024,2) | sort hour" \
-    "$EXPORT_DIR/dynabridge_analytics/usage_analytics/hourly_volume_pattern.json" \
-    "Hourly volume pattern (last 7 days)"
+    # Hourly pattern analysis (to identify peak hours)
+    run_analytics_search \
+      "search index=_internal source=*license_usage.log type=Usage earliest=-7d | eval hour=strftime(_time, \"%H\") | stats sum(b) as bytes by hour | eval gb=round(bytes/1024/1024/1024,2) | sort hour" \
+      "$EXPORT_DIR/dynabridge_analytics/usage_analytics/hourly_volume_pattern.json" \
+      "Hourly volume pattern (last 7 days)"
 
-  # Top 20 indexes by daily average volume
-  run_analytics_search \
-    "search index=_internal source=*license_usage.log type=Usage earliest=-30d@d | stats sum(b) as total_bytes by idx | eval daily_avg_gb=round((total_bytes/30)/1024/1024/1024,2) | sort - daily_avg_gb | head 20" \
-    "$EXPORT_DIR/dynabridge_analytics/usage_analytics/top_indexes_by_volume.json" \
-    "Top 20 indexes by daily average volume"
+    # Top 20 indexes by daily average volume
+    run_analytics_search \
+      "search index=_internal source=*license_usage.log type=Usage earliest=-30d@d | stats sum(b) as total_bytes by idx | eval daily_avg_gb=round((total_bytes/30)/1024/1024/1024,2) | sort - daily_avg_gb | head 20" \
+      "$EXPORT_DIR/dynabridge_analytics/usage_analytics/top_indexes_by_volume.json" \
+      "Top 20 indexes by daily average volume"
 
-  # Top 20 sourcetypes by daily average volume
-  run_analytics_search \
-    "search index=_internal source=*license_usage.log type=Usage earliest=-30d@d | stats sum(b) as total_bytes by st | eval daily_avg_gb=round((total_bytes/30)/1024/1024/1024,2) | sort - daily_avg_gb | head 20" \
-    "$EXPORT_DIR/dynabridge_analytics/usage_analytics/top_sourcetypes_by_volume.json" \
-    "Top 20 sourcetypes by daily average volume"
+    # Top 20 sourcetypes by daily average volume
+    run_analytics_search \
+      "search index=_internal source=*license_usage.log type=Usage earliest=-30d@d | stats sum(b) as total_bytes by st | eval daily_avg_gb=round((total_bytes/30)/1024/1024/1024,2) | sort - daily_avg_gb | head 20" \
+      "$EXPORT_DIR/dynabridge_analytics/usage_analytics/top_sourcetypes_by_volume.json" \
+      "Top 20 sourcetypes by daily average volume"
 
-  # Volume by host (top 50)
-  run_analytics_search \
-    "search index=_internal source=*license_usage.log type=Usage earliest=-30d@d | stats sum(b) as total_bytes by h | eval daily_avg_gb=round((total_bytes/30)/1024/1024/1024,2) | sort - daily_avg_gb | head 50" \
-    "$EXPORT_DIR/dynabridge_analytics/usage_analytics/top_hosts_by_volume.json" \
-    "Top 50 hosts by daily average volume"
+    # Volume by host (top 50)
+    run_analytics_search \
+      "search index=_internal source=*license_usage.log type=Usage earliest=-30d@d | stats sum(b) as total_bytes by h | eval daily_avg_gb=round((total_bytes/30)/1024/1024/1024,2) | sort - daily_avg_gb | head 50" \
+      "$EXPORT_DIR/dynabridge_analytics/usage_analytics/top_hosts_by_volume.json" \
+      "Top 50 hosts by daily average volume"
 
-  success "Daily volume statistics collected"
+    success "Daily volume statistics collected"
+  fi
 
   # =========================================================================
   # CATEGORY 5c: INGESTION INFRASTRUCTURE (For understanding data collection)
@@ -2698,24 +3079,52 @@ collect_indexes() {
 
   progress "Collecting index information..."
 
-  # Index list
   local response
-  response=$(api_call "/services/data/indexes" "GET" "output_mode=json&count=0")
-  if [ $? -eq 0 ]; then
-    echo "$response" > "$EXPORT_DIR/dynabridge_analytics/indexes/indexes.json"
 
-    if $HAS_JQ; then
-      STATS_INDEXES=$(echo "$response" | jq '.entry | length' 2>/dev/null)
-    else
-      STATS_INDEXES=$(echo "$response" | grep -c '"name"')
+  # =========================================================================
+  # PERFORMANCE OPTIMIZATION: App-scoped index collection
+  # In large environments (470+ indexes), collecting all indexes is slow.
+  # When scoped to specific apps, we only collect indexes that are actually
+  # used by searches in those apps - much faster and more relevant.
+  # =========================================================================
+  if [ "$SCOPE_TO_APPS" = "true" ] && [ ${#SELECTED_APPS[@]} -gt 0 ]; then
+    info "App-scoped mode: Collecting indexes used by selected apps only"
+
+    # Get indexes referenced in searches from selected apps (from _audit)
+    local app_filter=$(get_app_filter "app")
+    if [ -n "$app_filter" ]; then
+      local index_search="search index=_audit action=search ${app_filter} earliest=-${USAGE_PERIOD} | rex field=search \"index\\s*=\\s*(?<idx>[\\w_-]+)\" | where isnotnull(idx) | stats count as searches, dc(user) as users by idx | sort -searches"
+      run_analytics_search "$index_search" "$EXPORT_DIR/dynabridge_analytics/indexes/indexes_used_by_apps.json" "Indexes used by selected apps"
+
+      # Count indexes from the result
+      if [ -f "$EXPORT_DIR/dynabridge_analytics/indexes/indexes_used_by_apps.json" ] && $HAS_JQ; then
+        STATS_INDEXES=$(jq '.results | length // 0' "$EXPORT_DIR/dynabridge_analytics/indexes/indexes_used_by_apps.json" 2>/dev/null || echo "0")
+        success "Collected $STATS_INDEXES indexes used by selected apps"
+      fi
     fi
-    success "Collected $STATS_INDEXES indexes"
-  fi
 
-  # Extended stats (may be limited in cloud)
-  response=$(api_call "/services/data/indexes-extended" "GET" "output_mode=json&count=0")
-  if [ $? -eq 0 ]; then
-    echo "$response" > "$EXPORT_DIR/dynabridge_analytics/indexes/indexes_extended.json"
+    # Create a placeholder for full indexes.json explaining the scoped collection
+    echo "{\"scoped\": true, \"reason\": \"App-scoped mode - only indexes used by selected apps collected\", \"apps\": [$(printf '\"%s\",' "${SELECTED_APPS[@]}" | sed 's/,$//')]}" > "$EXPORT_DIR/dynabridge_analytics/indexes/indexes.json"
+
+  else
+    # Full collection mode - get all indexes
+    response=$(api_call "/services/data/indexes" "GET" "output_mode=json&count=0")
+    if [ $? -eq 0 ]; then
+      echo "$response" > "$EXPORT_DIR/dynabridge_analytics/indexes/indexes.json"
+
+      if $HAS_JQ; then
+        STATS_INDEXES=$(echo "$response" | jq '.entry | length' 2>/dev/null)
+      else
+        STATS_INDEXES=$(echo "$response" | grep -c '"name"')
+      fi
+      success "Collected $STATS_INDEXES indexes"
+    fi
+
+    # Extended stats (may be limited in cloud) - only in full mode
+    response=$(api_call "/services/data/indexes-extended" "GET" "output_mode=json&count=0")
+    if [ $? -eq 0 ]; then
+      echo "$response" > "$EXPORT_DIR/dynabridge_analytics/indexes/indexes_extended.json"
+    fi
   fi
 }
 
@@ -3610,6 +4019,9 @@ ANON_EOF
 # =============================================================================
 
 create_archive() {
+  # Finalize debug log before archiving (redirect to stderr for consistency)
+  finalize_debug_log >&2
+
   progress "Creating compressed archive..."
 
   local archive_name="${EXPORT_NAME}.tar.gz"
@@ -3975,8 +4387,23 @@ main() {
         shift
         ;;
       --apps)
-        IFS=',' read -ra SELECTED_APPS <<< "$2"
+        # Check if value is provided
+        if [ -z "$2" ] || [[ "$2" == --* ]]; then
+          echo "[ERROR] --apps requires a value (comma-separated app names)" >&2
+          exit 1
+        fi
+        # Clear array first, then populate from comma-separated list
+        SELECTED_APPS=()
+        IFS=',' read -ra _apps_temp <<< "$2"
+        for _app in "${_apps_temp[@]}"; do
+          # Trim whitespace
+          _app=$(echo "$_app" | xargs)
+          [ -n "$_app" ] && SELECTED_APPS+=("$_app")
+        done
         EXPORT_ALL_APPS=false
+        if [ ${#SELECTED_APPS[@]} -eq 0 ]; then
+          echo "[WARNING] --apps was specified but no valid apps were parsed from '$2'" >&2
+        fi
         shift 2
         ;;
       --output)
@@ -3985,6 +4412,26 @@ main() {
         ;;
       --no-usage)
         COLLECT_USAGE=false
+        shift
+        ;;
+      --skip-internal)
+        SKIP_INTERNAL=true
+        shift
+        ;;
+      --quick)
+        # Quick mode - dramatically faster exports by skipping global analytics
+        QUICK_MODE=true
+        SCOPE_TO_APPS=true
+        shift
+        ;;
+      --scoped)
+        # Scope all collections to selected apps (auto-enabled with --apps)
+        SCOPE_TO_APPS=true
+        shift
+        ;;
+      --debug|-d)
+        # Enable verbose debug logging for troubleshooting
+        DEBUG_MODE=true
         shift
         ;;
       --help)
@@ -3999,7 +4446,24 @@ main() {
         echo "  --apps LIST       Comma-separated list of apps"
         echo "  --output DIR      Output directory"
         echo "  --no-usage        Skip usage analytics collection"
+        echo "  --skip-internal   Skip searches requiring _internal index (use if restricted)"
+        echo "  --quick           Quick mode - TESTING ONLY (skips critical migration data)"
+        echo "  --scoped          Scope all collections to selected apps only"
+        echo "  -d, --debug       Enable verbose debug logging (writes to export_debug.log)"
         echo "  --help            Show this help"
+        echo ""
+        echo "WARNING: --quick is for TESTING/VALIDATION ONLY"
+        echo "  Do NOT use --quick for migration analysis. It skips:"
+        echo "    - Usage analytics (who uses what, how often)"
+        echo "    - User/RBAC data (migration audience identification)"
+        echo "    - Priority assessment data"
+        echo "  For migration analysis, use full export (default) or --scoped."
+        echo ""
+        echo "Performance Tips:"
+        echo "  For large environments, use --scoped (not --quick) with --apps:"
+        echo "    $0 --stack acme.splunkcloud.com --token XXX --apps myapp --scoped"
+        echo ""
+        echo "  This exports app configs + app-specific users/usage for migration analysis."
         exit 0
         ;;
       *)
@@ -4009,16 +4473,73 @@ main() {
     esac
   done
 
-  # Show banner
+  # =========================================================================
+  # DETERMINE INTERACTIVE VS NON-INTERACTIVE MODE
+  # Non-interactive requires: --stack AND (--token OR --user+--password)
+  # =========================================================================
+
+  # Check if we have enough params for non-interactive mode
+  local has_stack=false
+  local has_auth=false
+
+  [ -n "$SPLUNK_STACK" ] && has_stack=true
+  [ -n "$AUTH_TOKEN" ] && has_auth=true
+  [ -n "$SPLUNK_USER" ] && [ -n "$SPLUNK_PASSWORD" ] && has_auth=true
+
+  # Provide helpful feedback if partial params were given
+  if [ "$has_stack" = "true" ] && [ "$has_auth" = "false" ]; then
+    echo ""
+    echo -e "${YELLOW}⚠ WARNING: --stack provided but no authentication${NC}"
+    echo -e "${DIM}  For non-interactive mode, also provide:${NC}"
+    echo -e "${DIM}    --token YOUR_TOKEN${NC}"
+    echo -e "${DIM}    OR --user USER --password PASS${NC}"
+    echo ""
+    echo -e "${DIM}  Falling back to interactive mode...${NC}"
+    echo ""
+  fi
+
+  if [ "$has_stack" = "false" ] && [ "$has_auth" = "true" ]; then
+    echo ""
+    echo -e "${YELLOW}⚠ WARNING: Authentication provided but no --stack${NC}"
+    echo -e "${DIM}  For non-interactive mode, also provide:${NC}"
+    echo -e "${DIM}    --stack your-stack.splunkcloud.com${NC}"
+    echo ""
+    echo -e "${DIM}  Falling back to interactive mode...${NC}"
+    echo ""
+  fi
+
+  # Show banner (NON_INTERACTIVE controls clear behavior)
+  if [ "$has_stack" = "true" ] && [ "$has_auth" = "true" ]; then
+    NON_INTERACTIVE=true
+  fi
   show_banner
 
   # Check if non-interactive mode (all required params provided)
-  if [ -n "$SPLUNK_STACK" ] && ([ -n "$AUTH_TOKEN" ] || ([ -n "$SPLUNK_USER" ] && [ -n "$SPLUNK_PASSWORD" ])); then
-    # Non-interactive mode
+  if [ "$NON_INTERACTIVE" = "true" ]; then
+    # Non-interactive mode - NO PROMPTS ALLOWED
     SPLUNK_STACK=$(echo "$SPLUNK_STACK" | sed 's|https://||' | sed 's|:8089||' | sed 's|/$||')
     SPLUNK_URL="https://${SPLUNK_STACK}:8089"
 
-    info "Running in non-interactive mode..."
+    info "Running in NON-INTERACTIVE mode (all required parameters provided)"
+    info "  Stack: $SPLUNK_STACK"
+    info "  Auth:  ${AUTH_METHOD:-token}"
+    if [ ${#SELECTED_APPS[@]} -gt 0 ]; then
+      info "  Apps:  ${SELECTED_APPS[*]}"
+    else
+      info "  Apps:  all (will fetch from API)"
+    fi
+    if [ "$QUICK_MODE" = "true" ]; then
+      info "  Mode:  QUICK (no global analytics)"
+    elif [ "$SCOPE_TO_APPS" = "true" ]; then
+      info "  Mode:  App-scoped analytics"
+    fi
+    if [ "$DEBUG_MODE" = "true" ]; then
+      info "  Debug: ENABLED (verbose logging)"
+    fi
+    echo ""
+
+    # Log configuration state for debugging
+    debug_config_state
 
     if ! test_connectivity "$SPLUNK_URL"; then
       exit 1
@@ -4037,8 +4558,32 @@ main() {
     SERVER_GUID=$(json_value "$server_info" '.entry[0].content.guid')
     CLOUD_TYPE="cloud"
 
-    # Get apps if exporting all
+    info "Connected to Splunk Cloud v$SPLUNK_VERSION"
+
+    # Get apps if exporting all (or if no apps specified)
     if [ "$EXPORT_ALL_APPS" = "true" ] || [ ${#SELECTED_APPS[@]} -eq 0 ]; then
+      # =====================================================================
+      # WARNING: No app filter specified - will export ALL apps
+      # This can be very slow in large environments
+      # =====================================================================
+      echo ""
+      echo -e "  ${YELLOW}╔══════════════════════════════════════════════════════════════════════╗${NC}"
+      echo -e "  ${YELLOW}║${NC}  ${BOLD}⚠ WARNING: No --apps filter specified${NC}                                ${YELLOW}║${NC}"
+      echo -e "  ${YELLOW}║${NC}                                                                        ${YELLOW}║${NC}"
+      echo -e "  ${YELLOW}║${NC}  The script will export ALL applications from this Splunk Cloud       ${YELLOW}║${NC}"
+      echo -e "  ${YELLOW}║${NC}  environment. In large systems (1000+ dashboards), this may take      ${YELLOW}║${NC}"
+      echo -e "  ${YELLOW}║${NC}  several hours to complete.                                           ${YELLOW}║${NC}"
+      echo -e "  ${YELLOW}║${NC}                                                                        ${YELLOW}║${NC}"
+      echo -e "  ${YELLOW}║${NC}  ${DIM}To export specific apps with usage data, use:${NC}                        ${YELLOW}║${NC}"
+      echo -e "  ${YELLOW}║${NC}  ${DIM}  --apps \"app1,app2\" --scoped${NC}                                         ${YELLOW}║${NC}"
+      echo -e "  ${YELLOW}║${NC}                                                                        ${YELLOW}║${NC}"
+      echo -e "  ${YELLOW}║${NC}  ${DIM}(--quick is for testing only - skips migration-critical data)${NC}        ${YELLOW}║${NC}"
+      echo -e "  ${YELLOW}╚══════════════════════════════════════════════════════════════════════╝${NC}"
+      echo ""
+      echo -e "  ${CYAN}Continuing with full export...${NC}"
+      echo ""
+
+      info "Fetching app list from Splunk Cloud..."
       local apps_response
       apps_response=$(api_call "/services/apps/local" "GET" "output_mode=json&count=0")
       if $HAS_JQ; then
@@ -4050,11 +4595,19 @@ main() {
           SELECTED_APPS+=("$line")
         done < <(echo "$apps_response" | grep -oP '"name"\s*:\s*"\K[^"]+')
       fi
+
+      # Show count and additional warning if large
+      local app_count=${#SELECTED_APPS[@]}
+      if [ "$app_count" -gt 50 ]; then
+        warning "Found ${app_count} apps - this is a large environment!"
+        warning "Consider using --apps to filter for faster exports"
+      fi
     fi
 
     STATS_APPS=${#SELECTED_APPS[@]}
+    info "Will export ${STATS_APPS} app(s)"
   else
-    # Interactive mode
+    # Interactive mode - prompts allowed
     show_introduction
     get_splunk_stack
     get_authentication
@@ -4065,6 +4618,41 @@ main() {
 
   # Set export start time
   EXPORT_START_TIME=$(date +%s)
+
+  # ==========================================================================
+  # AUTO-ENABLE APP-SCOPED MODE FOR PERFORMANCE
+  # When specific apps are selected (not --all-apps), automatically scope
+  # collections to those apps only. This dramatically reduces export time
+  # in large environments (from hours to minutes).
+  # ==========================================================================
+  if [ "$EXPORT_ALL_APPS" = "false" ] && [ "$QUICK_MODE" != "true" ]; then
+    # Specific apps were selected - auto-enable scoped mode
+    if [ "$SCOPE_TO_APPS" != "true" ]; then
+      info "App-scoped mode auto-enabled (specific apps selected)"
+      info "  → Usage analytics will be scoped to: ${SELECTED_APPS[*]}"
+      info "  → Use --all-apps to collect global analytics"
+      SCOPE_TO_APPS=true
+    fi
+  fi
+
+  # Display mode information
+  if [ "$QUICK_MODE" = "true" ]; then
+    echo ""
+    echo "  ${GREEN}⚡ QUICK MODE ENABLED${NC}"
+    echo "  ${DIM}Exporting app configs only - skipping global analytics${NC}"
+    echo "  ${DIM}This dramatically reduces export time for large environments${NC}"
+    echo ""
+    # In quick mode, skip expensive global collections
+    COLLECT_RBAC=false   # Skip global user collection
+    COLLECT_USAGE=false  # Skip all usage analytics
+    COLLECT_INDEXES=false # Skip global index list
+  elif [ "$SCOPE_TO_APPS" = "true" ]; then
+    echo ""
+    echo "  ${CYAN}📊 APP-SCOPED MODE${NC}"
+    echo "  ${DIM}Collections scoped to selected apps: ${SELECTED_APPS[*]}${NC}"
+    echo "  ${DIM}Global user/usage analytics will be filtered to these apps${NC}"
+    echo ""
+  fi
 
   # Run collection
   run_collection
