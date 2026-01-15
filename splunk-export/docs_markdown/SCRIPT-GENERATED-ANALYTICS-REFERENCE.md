@@ -231,7 +231,7 @@ Complete mapping of every dashboard to its owner, app, and sharing level.
     {
       "dashboard": "security_overview",
       "app": "security_app",
-      "owner": "jsmith",
+      "owner": "splunk_user",
       "sharing": "app"
     }
   ]
@@ -1121,7 +1121,7 @@ Summary of dashboard and alert ownership by user.
 ```json
 {
   "results": [
-    {"owner": "jsmith", "dashboards": 45, "alerts": 23},
+    {"owner": "splunk_user", "dashboards": 45, "alerts": 23},
     {"owner": "security_team", "dashboards": 32, "alerts": 67},
     {"owner": "admin", "dashboards": 28, "alerts": 45}
   ]

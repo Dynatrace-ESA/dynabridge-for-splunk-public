@@ -269,10 +269,19 @@
 <h1>DynaBridge Splunk Cloud Export Script</h1>
 <h2>Prerequisites Guide for Splunk Cloud (Classic & Victoria Experience)</h2>
 <p>
-<strong>Version</strong>: 4.0.1
+<strong>Version</strong>: 4.2.0
 <strong>Last Updated</strong>: January 2026
 <strong>Related Documents</strong>: <a href="SCRIPT-GENERATED-ANALYTICS-REFERENCE.md">Script-Generated Analytics Reference</a> | <a href="SPLUNK-CLOUD-EXPORT-SPECIFICATION.md">Cloud Export Specification</a>
 </p>
+<h3>What's New in v4.2.0</h3>
+<ul>
+<li><strong>App-Centric Dashboard Structure (v2)</strong>: Dashboards now saved to <code>{AppName}/dashboards/classic/</code> and <code>{AppName}/dashboards/studio/</code> to prevent name collisions</li>
+<li><strong>Manifest Schema v4.0</strong>: Added <code>archive<em>structure</em>version: "v2"</code> for DynaBridge to detect the new structure</li>
+<li><strong>No More Flat Folders</strong>: Removed <code>dashboards<em>classic/</code> and <code>dashboards</em>studio/</code> at root level</li>
+</ul>
+<hr>
+<blockquote><p><strong>Developed for Dynatrace One by Enterprise Solutions & Architecture</strong></p></blockquote>
+<blockquote><p><em>An ACE Services Division of Dynatrace</em></p></blockquote>
 <hr>
 <h2>Quick Start</h2>
 <pre><code class="language-bash"># This script runs from YOUR machine (not on Splunk Cloud)
@@ -509,7 +518,98 @@ export SPLUNK_CLOUD_TOKEN=&quot;your-api-token&quot;
   --all-apps \
   --output /path/to/output</code></pre>
 <hr>
-<h2>Enterprise Resilience Features (v4.0.0)</h2>
+<h2>Command-Line Arguments (Updated in v4.1.0)</h2>
+<table>
+<thead>
+<tr><th>Argument</th><th>Description</th><th>Example</th></tr>
+</thead>
+<tbody>
+<tr><td><code>--stack</code></td><td>Splunk Cloud stack URL</td><td><code>--stack acme.splunkcloud.com</code></td></tr>
+<tr><td><code>--token</code></td><td>API token for authentication</td><td><code>--token "xxxxx"</code></td></tr>
+<tr><td><code>--user</code></td><td>Username (if not using token)</td><td><code>--user admin</code></td></tr>
+<tr><td><code>--password</code></td><td>Password (if not using token)</td><td><code>--password "xxx"</code></td></tr>
+<tr><td><code>--apps</code></td><td>Comma-separated list of apps <strong>(NEW v4.1.0)</strong></td><td><code>--apps "search,myapp"</code></td></tr>
+<tr><td><code>--all-apps</code></td><td>Export all applications (default)</td><td><code>--all-apps</code></td></tr>
+<tr><td><code>--quick</code></td><td>Quick mode - skip analytics <strong>(TESTING ONLY - see warning)</strong></td><td><code>--quick</code></td></tr>
+<tr><td><code>--scoped</code></td><td>Scope collections to selected apps only <strong>(NEW v4.1.0)</strong></td><td><code>--scoped</code></td></tr>
+<tr><td><code>--no-usage</code></td><td>Skip usage analytics collection</td><td><code>--no-usage</code></td></tr>
+<tr><td><code>--skip-internal</code></td><td>Skip searches requiring _internal index</td><td><code>--skip-internal</code></td></tr>
+<tr><td><code>--output</code></td><td>Output directory</td><td><code>--output /path/to/output</code></td></tr>
+<tr><td><code>-d, --debug</code></td><td>Enable verbose debug logging <strong>(NEW v4.1.0)</strong></td><td><code>--debug</code></td></tr>
+<tr><td><code>--help</code></td><td>Show help message</td><td><code>--help</code></td></tr>
+</tbody>
+</table>
+<h3>App-Scoped Export Mode (NEW in v4.1.0)</h3>
+<p>
+For large Splunk Cloud environments, dramatically reduce export time by targeting specific apps:
+</p>
+<pre><code class="language-bash"># Export only specific apps (fastest option)
+./dynabridge-splunk-cloud-export.sh \
+  --stack acme.splunkcloud.com \
+  --token &quot;$TOKEN&quot; \
+  --apps &quot;search,myapp,security_essentials&quot; \
+  --quick
+
+# Scoped mode - exports app configs + only users/searches related to those apps
+./dynabridge-splunk-cloud-export.sh \
+  --stack acme.splunkcloud.com \
+  --token &quot;$TOKEN&quot; \
+  --apps &quot;myapp,otherapp&quot; \
+  --scoped</code></pre>
+<table>
+<thead>
+<tr><th>Mode</th><th>What It Does</th><th>Use When</th></tr>
+</thead>
+<tbody>
+<tr><td><code>--quick</code></td><td>App configs only, no global analytics</td><td><strong>Testing/validation only</strong> - NOT for migration analysis</td></tr>
+<tr><td><code>--scoped</code></td><td>App configs + app-filtered users/usage</td><td>You want usage data but only for selected apps</td></tr>
+<tr><td>(default)</td><td>Full export of all apps + global analytics</td><td><strong>Recommended</strong> - Full migration analysis</td></tr>
+</tbody>
+</table>
+<blockquote><p><strong>⚠️ CRITICAL WARNING: Do NOT use <code>--quick</code> for Migration Analysis</strong></p></blockquote>
+<p>
+>
+</p>
+<blockquote><p>The <code>--quick</code> flag is intended <strong>ONLY for testing and script validation</strong>, not for actual migration planning. Using <code>--quick</code> eliminates critical data needed for migration analysis:</p></blockquote>
+<p>
+>
+</p>
+<blockquote><p>- <strong>Usage Analytics</strong>: Who uses which dashboards/alerts, how often, and when last accessed</p></blockquote>
+<blockquote><p>- <strong>User & RBAC Data</strong>: Migration audience identification, role mappings, permission structures</p></blockquote>
+<blockquote><p>- <strong>Search Activity</strong>: Which saved searches are actively used vs. abandoned</p></blockquote>
+<blockquote><p>- <strong>Priority Assessment</strong>: Data needed to determine migration priority and phasing</p></blockquote>
+<p>
+>
+</p>
+<blockquote><p><strong>Without this data, you cannot:</strong></p></blockquote>
+<blockquote><p>- Identify which assets are actually being used vs. unused/abandoned</p></blockquote>
+<blockquote><p>- Understand who your migration audiences are</p></blockquote>
+<blockquote><p>- Prioritize which dashboards/alerts to migrate first</p></blockquote>
+<blockquote><p>- Make informed decisions about what may or may not be needed</p></blockquote>
+<p>
+>
+</p>
+<blockquote><p><strong>Always use the default (full) export or <code>--scoped</code> for any export intended for migration analysis.</strong></p></blockquote>
+<h3>Debug Mode (NEW in v4.1.0)</h3>
+<p>
+When troubleshooting issues, enable debug mode to capture detailed logs:
+</p>
+<pre><code class="language-bash">./dynabridge-splunk-cloud-export.sh \
+  --stack acme.splunkcloud.com \
+  --token &quot;$TOKEN&quot; \
+  --apps myapp \
+  --debug</code></pre>
+<p>
+Debug mode provides:
+</p>
+<ul>
+<li><strong>Console output</strong>: Color-coded messages by category (API, SEARCH, TIMING, ERROR, WARN)</li>
+<li><strong>Debug log file</strong>: <code>export_debug.log</code> inside the export directory (included in the .tar.gz)</li>
+<li><strong>API call tracking</strong>: Every REST API call with HTTP status and response size</li>
+<li><strong>Detailed timing</strong>: Duration of each API call and search operation</li>
+</ul>
+<hr>
+<h2>Enterprise Resilience Features</h2>
 <p>
 <strong>NEW in v4.0.0</strong>: The Cloud script now includes the same enterprise-scale features as the Enterprise script for environments with 4000+ dashboards and 10K+ alerts.
 </p>
@@ -648,17 +748,18 @@ rm export.tar.gz</code></pre>
 The export creates a <code>.tar.gz</code> file compatible with DynaBridge containing:
 </p>
 <pre><code>dynabridge_cloud_export_[stack]_[timestamp]/
-├── dynasplunk-env-summary.md      # Summary report
-├── _metadata.json                  # Export metadata
+├── dynabridge-env-summary.md      # Summary report
+├── manifest.json                   # Export metadata (schema v4.0)
 ├── _systeminfo/                    # Server info
 ├── _rbac/                         # Users and roles
 ├── _configs/                      # Reconstructed configs
 ├── _usage_analytics/              # Usage data
-├── [app_name]/                    # Per-app data
-│   ├── dashboards/
-│   ├── savedsearches.json
-│   └── macros.json
-└── dashboard_studio/              # Dashboard Studio content</code></pre>
+└── [app_name]/                    # Per-app data (v2 app-centric structure)
+    ├── dashboards/                 # v2: App-scoped dashboards (v4.2.0+)
+    │   ├── classic/               # Classic XML dashboards for this app
+    │   └── studio/                # Dashboard Studio JSON for this app
+    ├── savedsearches.json
+    └── macros.json</code></pre>
 <hr>
 <h2>Comparison with Enterprise Export</h2>
 <table>
@@ -742,7 +843,7 @@ When you run <code>./dynabridge-splunk-cloud-export.sh</code>, you'll see:
 ║                   ☁️  SPLUNK CLOUD EXPORT SCRIPT  ☁️                         ║
 ║                                                                                ║
 ║          Complete REST API-Based Data Collection for Migration              ║
-║                        Version 4.0.0                                    ║
+║                        Version 4.1.0                                    ║
 ║                                                                                ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 
@@ -915,7 +1016,7 @@ Ready to proceed? (Y/n):</code></pre>
 ║                                                                              ║
 ║  2. Review the summary report:                                               ║
 ║     cat dynabridge_cloud_export_acme-corp_20241203_143052/                   ║
-║         dynasplunk-env-summary.md                                            ║
+║         dynabridge-env-summary.md                                            ║
 ║                                                                              ║
 ╚══════════════════════════════════════════════════════════════════════════════╝</code></pre>
 <h3>What Success Looks Like</h3>
@@ -926,7 +1027,7 @@ After a successful export, you'll have a <code>.tar.gz</code> file. Extract it t
 
 dynabridge_cloud_export_acme-corp_20241203_143052/
 dynabridge_cloud_export_acme-corp_20241203_143052/manifest.json
-dynabridge_cloud_export_acme-corp_20241203_143052/dynasplunk-env-summary.md
+dynabridge_cloud_export_acme-corp_20241203_143052/dynabridge-env-summary.md
 dynabridge_cloud_export_acme-corp_20241203_143052/_export.log
 dynabridge_cloud_export_acme-corp_20241203_143052/_systeminfo/
 dynabridge_cloud_export_acme-corp_20241203_143052/_systeminfo/server_info.json
@@ -964,14 +1065,14 @@ Review <code>TROUBLESHOOTING.md</code> in the export directory for specific reme
 </p>
 <hr>
 <h2>Sample Output Files</h2>
-<h3>Example: dynasplunk-env-summary.md</h3>
+<h3>Example: dynabridge-env-summary.md</h3>
 <p>
 This human-readable summary report is generated in the export directory:
 </p>
 <pre><code class="language-markdown"># DynaBridge Splunk Cloud Environment Summary
 
 **Export Date**: 2025-12-03 14:30:52 EST
-**Export Script Version**: 4.0.0
+**Export Script Version**: 4.1.0
 **Export Type**: Splunk Cloud (REST API)
 
 ---

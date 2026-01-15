@@ -1,7 +1,20 @@
 # DynaBridge Splunk Export Scripts
 
-**Version**: 4.0.1
+**Version**: 4.2.0
 **Last Updated**: January 2026
+
+## What's New in v4.2.0
+
+**App-Centric Dashboard Structure (v2)** - Dashboards are now organized by app to prevent name collisions:
+- Dashboards saved to `{AppName}/dashboards/classic/` and `{AppName}/dashboards/studio/`
+- No more flat `dashboards_classic/` and `dashboards_studio/` folders at root
+- Multiple apps can now have dashboards with the same name without data loss
+- Manifest schema updated to v4.0 with `archive_structure_version: "v2"`
+
+---
+
+> **Developed for Dynatrace One by Enterprise Solutions & Architecture**
+> *An ACE Services Division of Dynatrace*
 
 ---
 
@@ -82,7 +95,35 @@ Both scripts collect the same categories of data:
 
 ---
 
-## Enterprise Resilience Features (v4.0)
+## New in v4.1.0
+
+### App-Scoped Export Mode
+
+Target specific apps for faster exports in large environments:
+
+| Flag | Description |
+|------|-------------|
+| `--apps "app1,app2"` | Export only specified apps |
+| `--scoped` | Scope all collections (users, usage) to selected apps |
+| `--quick` | **TESTING ONLY** - Skip usage analytics and RBAC |
+| `--no-usage` | Skip usage analytics collection |
+| `--no-rbac` | Skip RBAC/user collection (Enterprise only) |
+| `--debug` or `-d` | Enable verbose debug logging |
+
+> **⚠️ WARNING: `--quick` is for TESTING ONLY**
+>
+> Do NOT use `--quick` for migration analysis. It skips usage analytics, user/RBAC data, and priority assessment data critical for migration planning. Use full export (default) or `--scoped` for actual migrations.
+
+### Debug Mode
+
+Enable detailed logging for troubleshooting with `--debug`:
+- Color-coded console output (ERROR, WARN, API, SEARCH, TIMING)
+- Debug log file: `export_debug.log` included in the export archive
+- API call tracking with response times and sizes
+
+---
+
+## Enterprise Resilience Features
 
 Both scripts include enterprise-scale features for large environments:
 
@@ -98,41 +139,57 @@ Both scripts include enterprise-scale features for large environments:
 ### Automation Support
 
 ```bash
-# Non-interactive mode with command-line arguments
+# Non-interactive mode - full export
 ./dynabridge-splunk-export.sh \
   -u admin \
   -p 'YourPassword' \
   --splunk-home /opt/splunk \
   --anonymize \
   -y  # Auto-confirm all prompts
+
+# App-scoped export with usage data (recommended for large environments)
+./dynabridge-splunk-export.sh \
+  -u admin \
+  -p 'YourPassword' \
+  --apps "myapp1,myapp2" \
+  --scoped \
+  --debug
 ```
 
 ---
 
 ## Export Output
 
-Both scripts produce a `.tar.gz` archive with this structure:
+Both scripts produce a `.tar.gz` archive with the **v2 app-centric structure**:
 
 ```
 dynabridge_export_<hostname>_<YYYYMMDD_HHMMSS>.tar.gz
-├── manifest.json                    # Export metadata and statistics
-├── dynasplunk-env-summary.md        # Human-readable summary
+├── manifest.json                    # Export metadata (schema v4.0)
+├── dynabridge-env-summary.md        # Human-readable summary
 ├── export.log                       # Export process log
 ├── _systeminfo/                     # System information
 ├── _rbac/                           # Users and roles (no passwords)
 ├── _indexes/                        # Index configurations
 ├── _usage_analytics/                # Usage data for prioritization
 ├── _system/                         # System-level configs
-├── dashboard_studio/                # Dashboard Studio exports
 └── <app_name>/                      # Per-app configurations
+    ├── dashboards/
+    │   ├── classic/                 # Classic XML dashboards for this app
+    │   │   └── *.xml
+    │   └── studio/                  # Dashboard Studio JSON for this app
+    │       └── *.json
     ├── default/
     │   ├── props.conf
     │   ├── transforms.conf
-    │   ├── savedsearches.conf
-    │   └── data/ui/views/*.xml      # Classic dashboards
+    │   └── savedsearches.conf
     ├── local/
     └── lookups/                     # CSV lookup tables
 ```
+
+**Why App-Centric Structure?**
+- Multiple apps can have dashboards with the same name (no collisions)
+- Preserves app ownership context for migration planning
+- Cleaner organization aligned with Splunk's app model
 
 ---
 
@@ -304,6 +361,7 @@ Enable anonymization when sharing exports with consultants, support teams, or up
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 4.0.2 | Jan 2026 | Auto-fix for CRLF line endings (Windows download compatibility) |
 | 4.0.1 | Jan 2026 | Container-friendly progress display for kubectl/docker |
 | 4.0.0 | Jan 2026 | Enterprise resilience: pagination, checkpoints, retry logic |
 | 3.4.0 | Dec 2025 | Added ownership mapping for user-centric migration |

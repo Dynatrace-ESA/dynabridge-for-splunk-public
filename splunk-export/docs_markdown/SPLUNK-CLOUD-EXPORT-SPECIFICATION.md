@@ -1,9 +1,23 @@
 # DynaBridge Splunk Cloud Export Script - Technical Specification
 
-## Version 4.0.1 | REST API-Only Data Collection for Splunk Cloud
+## Version 4.2.0 | REST API-Only Data Collection for Splunk Cloud
 
 **Last Updated**: January 2026
 **Related Documents**: [Script-Generated Analytics Reference](SCRIPT-GENERATED-ANALYTICS-REFERENCE.md) | [Cloud README](README-SPLUNK-CLOUD.md) | [Export Schema](EXPORT-SCHEMA.md)
+
+---
+
+> **Developed for Dynatrace One by Enterprise Solutions & Architecture**
+> *An ACE Services Division of Dynatrace*
+
+---
+
+## What's New in v4.2.0
+
+### App-Centric Dashboard Structure (v2)
+- **No more flat folders**: Dashboards are now saved to `{AppName}/dashboards/classic/` and `{AppName}/dashboards/studio/` instead of root-level `dashboards_classic/` and `dashboards_studio/`
+- **Prevents name collisions**: Multiple apps can now have dashboards with the same name without data loss
+- **Manifest Schema v4.0**: Added `archive_structure_version: "v2"` for DynaBridge to detect and process the new structure
 
 ---
 
@@ -21,6 +35,29 @@ This specification defines the complete requirements for a **Splunk Cloud-specif
 | **SPLUNK_HOME access** | Yes | No |
 | **File-based configs** | Yes (props.conf, etc.) | No - must use REST endpoints |
 | **Output format** | Same `.tar.gz` structure | Same `.tar.gz` structure |
+
+---
+
+## What's New in v4.1.0
+
+### App-Scoped Export Mode
+- **`--apps` flag**: Export specific apps only (e.g., `--apps "search,myapp,security"`)
+- **`--quick` mode**: Skip global analytics for fastest possible export (**TESTING ONLY**)
+- **`--scoped` mode**: Scope RBAC/usage collection to selected apps only
+- **Auto-scoped**: When `--apps` is specified, collections automatically scope to those apps
+
+> **⚠️ WARNING**: `--quick` is for **testing/validation only**. It eliminates usage analytics, user data, and RBAC information critical for migration analysis. Always use full or `--scoped` export for actual migration planning.
+
+### Debug Mode
+- **`--debug` flag**: Enable verbose logging for troubleshooting
+- **Debug log file**: `export_debug.log` with detailed API/search lifecycle
+- **Color-coded console output**: ERROR (red), WARN (yellow), API (cyan), SEARCH (magenta), TIMING (blue)
+- **Sensitive data redaction**: Passwords and tokens automatically redacted in debug output
+
+### Performance Improvements
+- **App-filtered queries**: Usage searches now filter by selected apps
+- **Reduced scope**: Quick mode can complete in minutes vs hours for large environments
+- **`--no-usage`**: Skip usage analytics collection entirely
 
 ---
 
@@ -515,7 +552,7 @@ The output structure matches the Enterprise export for DynaBridge compatibility:
 ```
 dynabridge_cloud_export_[stack]_[timestamp]/
 │
-├── dynasplunk-env-summary.md          # Master summary
+├── dynabridge-env-summary.md          # Master summary
 ├── _metadata.json                      # Export metadata
 ├── _environment_profile.json           # Cloud environment details
 │
@@ -543,23 +580,21 @@ dynabridge_cloud_export_[stack]_[timestamp]/
 │   ├── indexes.json                   # From /configs/conf-indexes
 │   └── inputs.json                    # From /configs/conf-inputs
 │
-├── [app_name]/                        # Per-app data
-│   ├── app_info.json                  # App metadata
-│   ├── dashboards/                    # Dashboard definitions
-│   │   ├── dashboard_list.json
-│   │   └── [dashboard_name].json
-│   ├── savedsearches.json             # Alerts and saved searches
-│   ├── macros.json                    # Search macros
-│   ├── eventtypes.json                # Event types
-│   ├── tags.json                      # Tags
-│   ├── lookups/                       # Lookup definitions
-│   │   ├── lookup_files.json
-│   │   └── [lookup_name].csv          # If content collection enabled
-│   └── field_extractions.json         # Field extractions
-│
-└── dashboard_studio/                  # Dashboard Studio dashboards
-    ├── dashboards_list.json
-    └── [dashboard_name].json
+└── [app_name]/                        # Per-app data (v2 app-centric structure)
+    ├── app_info.json                  # App metadata
+    ├── dashboards/                    # v2: App-scoped dashboards (v4.2.0+)
+    │   ├── classic/                   # Classic XML dashboards for this app
+    │   │   └── *.xml
+    │   └── studio/                    # Dashboard Studio JSON for this app
+    │       └── *.json
+    ├── savedsearches.json             # Alerts and saved searches
+    ├── macros.json                    # Search macros
+    ├── eventtypes.json                # Event types
+    ├── tags.json                      # Tags
+    ├── lookups/                       # Lookup definitions
+    │   ├── lookup_files.json
+    │   └── [lookup_name].csv          # If content collection enabled
+    └── field_extractions.json         # Field extractions
 ```
 
 ### 6.2 Updated Output Structure (v4.0.0)
@@ -570,7 +605,7 @@ The v4.0.0 output includes additional usage intelligence files:
 dynabridge_cloud_export_[stack]_[timestamp]/
 │
 ├── manifest.json                         # Standardized metadata schema
-├── dynasplunk-env-summary.md             # Human-readable summary report
+├── dynabridge-env-summary.md             # Human-readable summary report
 │
 ├── _usage_analytics/
 │   ├── search_activity.json              # Search frequency data
@@ -705,10 +740,10 @@ The script generates a standardized `manifest.json` file with a guaranteed schem
 
 ```json
 {
-  "schemaVersion": "4.0.0",
+  "schemaVersion": "4.1.0",
   "exportType": "splunk_cloud",
   "exportTimestamp": "2025-12-03T10:30:00Z",
-  "scriptVersion": "4.0.0",
+  "scriptVersion": "4.1.0",
 
   "cloudEnvironment": {
     "stackUrl": "acme-corp.splunkcloud.com",
@@ -987,4 +1022,4 @@ The script uses jq extensively for:
 ---
 
 *End of Splunk Cloud Export Script Technical Specification*
-*Version 4.0.0*
+*Version 4.1.0*

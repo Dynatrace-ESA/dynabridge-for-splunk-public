@@ -15,7 +15,7 @@ dynabridge_export_<hostname>_<YYYYMMDD_HHMMSS>.tar.gz
 │
 ├── manifest.json                    # REQUIRED - Export metadata
 ├── _anonymization_report.json       # OPTIONAL - Only present if anonymization enabled
-├── dynasplunk-env-summary.md        # REQUIRED - Human-readable summary
+├── dynabridge-env-summary.md        # REQUIRED - Human-readable summary
 ├── export.log                       # REQUIRED - Export process log
 │
 ├── _systeminfo/                     # REQUIRED - System information
@@ -52,11 +52,12 @@ dynabridge_export_<hostname>_<YYYYMMDD_HHMMSS>.tar.gz
 ├── _audit_sample/                   # OPTIONAL - Audit log sample
 │   └── audit_sample.log
 │
-├── dashboard_studio/                # OPTIONAL - Dashboard Studio exports
-│   ├── dashboards_list.json         # List of all dashboards
-│   └── <dashboard_name>.json        # Individual dashboard definitions
-│
 └── <app_name>/                      # One directory per exported app
+    ├── dashboards/                  # v2 app-centric structure (v4.2.0+)
+    │   ├── classic/                 # Classic XML dashboards for this app
+    │   │   └── *.xml
+    │   └── studio/                  # Dashboard Studio JSON for this app
+    │       └── *.json
     ├── default/
     │   ├── props.conf
     │   ├── transforms.conf
@@ -73,8 +74,8 @@ dynabridge_export_<hostname>_<YYYYMMDD_HHMMSS>.tar.gz
     │   ├── commands.conf
     │   └── data/
     │       └── ui/
-    │           └── views/
-    │               └── *.xml        # Classic dashboards
+    │           └── views/           # Legacy location (v1 archives only)
+    │               └── *.xml
     ├── local/
     │   └── (same structure as default/)
     └── lookups/                     # OPTIONAL
@@ -154,8 +155,8 @@ These files are **direct dumps from Splunk REST APIs** - essentially reformatted
 | `_rbac/` | `roles.json` | `GET /services/authorization/roles` | Role definitions |
 | `_indexes/` | `indexes_detailed.json` | `GET /services/data/indexes` | Index configurations |
 | `_indexes/` | `data_inputs.json` | `GET /services/data/inputs/all` | Data input definitions |
-| `dashboard_studio/` | `dashboards_list.json` | `GET /servicesNS/-/-/data/ui/views` | Dashboard Studio list |
-| `dashboard_studio/` | `{dashboard_name}.json` | `GET /servicesNS/{owner}/{app}/data/ui/views/{name}` | Individual dashboards |
+| `<app>/dashboards/studio/` | `{dashboard_name}.json` | `GET /servicesNS/{owner}/{app}/data/ui/views/{name}` | Dashboard Studio JSON (v2 structure) |
+| `<app>/dashboards/classic/` | `{dashboard_name}.xml` | `GET /servicesNS/{owner}/{app}/data/ui/views/{name}` | Classic XML dashboards (v2 structure) |
 
 **Total: ~10 base files + N dashboard files** (direct Splunk exports)
 
@@ -540,8 +541,8 @@ This section helps answer critical migration questions:
 ```json
 {
   "results": [
-    {"dashboard": "security_overview", "app": "security_app", "owner": "jsmith", "sharing": "app"},
-    {"dashboard": "incident_tracker", "app": "security_app", "owner": "jsmith", "sharing": "global"},
+    {"dashboard": "security_overview", "app": "security_app", "owner": "splunk_user", "sharing": "app"},
+    {"dashboard": "incident_tracker", "app": "security_app", "owner": "splunk_user", "sharing": "global"},
     {"dashboard": "system_health", "app": "ops_monitoring", "owner": "admin", "sharing": "app"}
   ]
 }
@@ -632,7 +633,7 @@ DynaBridge validates exports against these rules:
 
 ### SHOULD Have (Warnings If Missing)
 1. `export.log` for troubleshooting
-2. `dynasplunk-env-summary.md` for human review
+2. `dynabridge-env-summary.md` for human review
 3. `manifest.json.statistics` section populated
 4. `manifest.json.usage_intelligence` section (for migration prioritization)
 

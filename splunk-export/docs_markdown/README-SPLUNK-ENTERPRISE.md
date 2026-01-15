@@ -1,9 +1,20 @@
 # DynaBridge Splunk Enterprise Export Script
 ## READ THIS FIRST - Complete Prerequisites Guide
 
-**Version**: 4.0.1
+**Version**: 4.2.0
 **Last Updated**: January 2026
 **Related Documents**: [Script-Generated Analytics Reference](SCRIPT-GENERATED-ANALYTICS-REFERENCE.md) | [Enterprise Export Specification](SPLUNK-ENTERPRISE-EXPORT-SPECIFICATION.md) | [Export Improvement Analysis](EXPORT-IMPROVEMENT-ANALYSIS.md)
+
+### What's New in v4.2.0
+
+- **App-Centric Dashboard Structure (v2)**: Dashboards now saved to `{AppName}/dashboards/classic/` and `{AppName}/dashboards/studio/` to prevent name collisions
+- **Manifest Schema v4.0**: Added `archive_structure_version: "v2"` for DynaBridge to detect the new structure
+- **No More Flat Folders**: Removed `dashboards_classic/` and `dashboards_studio/` at root level
+
+---
+
+> **Developed for Dynatrace One by Enterprise Solutions & Architecture**
+> *An ACE Services Division of Dynatrace*
 
 ---
 
@@ -102,7 +113,7 @@ This document explains **everything you need to know** before running the DynaBr
 5. [Pre-Flight Checklist](#5-pre-flight-checklist)
 6. [What Data Gets Collected](#6-what-data-gets-collected)
 7. [Security & Privacy Considerations](#7-security--privacy-considerations)
-8. [Command-Line Arguments & Automation](#8-command-line-arguments--automation) **(NEW in v4.0)**
+8. [Command-Line Arguments & Automation](#8-command-line-arguments--automation) **(Updated in v4.1.0)**
 9. [Troubleshooting Access Issues](#9-troubleshooting-access-issues)
 
 ---
@@ -600,7 +611,7 @@ Before running the export script, verify each item:
 | inputs.conf | [app]/local/inputs.conf | Medium | Paths only |
 | savedsearches.conf | [app]/local/savedsearches.conf | Medium | No |
 | Dashboards XML | [app]/data/ui/views/*.xml | Low | No |
-| Dashboard Studio | dashboard_studio/*.json | Low | No |
+| Dashboard Studio | [app]/dashboards/studio/*.json | Low | No |
 | Users list | _rbac/users.json | Medium | Emails included |
 | Roles list | _rbac/roles.json | Low | No |
 | LDAP/SAML config | _rbac/authentication.conf | Medium | Passwords redacted |
@@ -697,7 +708,7 @@ When sharing exports with third parties (e.g., migration consultants, Dynatrace 
 
 | Data Type | Original | Anonymized |
 |-----------|----------|------------|
-| **Email Addresses** | `john.doe@acme-corp.com` | `user3f8a2c@anon.dynabridge.local` |
+| **Email Addresses** | `user1@example-corp.com` | `user3f8a2c@anon.dynabridge.local` |
 | **Hostnames** | `splunk-idx01.acme.internal` | `host-7b4c9e12.anon.local` |
 | **IP Addresses** | `192.168.1.100` | `[IP-REDACTED]` |
 | **IPv6 Addresses** | `2001:db8::1` | `[IPv6-REDACTED]` |
@@ -738,7 +749,7 @@ Toggle: 9
 
 ## 8. Command-Line Arguments & Automation
 
-**NEW in v4.0**: The script now supports command-line arguments for automation and CI/CD pipelines.
+**Updated in v4.1.0**: The script supports comprehensive command-line arguments for automation, app-scoped exports, and troubleshooting.
 
 ### 8.1 Available Command-Line Arguments
 
@@ -749,14 +760,21 @@ Toggle: 9
 | `-h, --host` | Splunk host (default: localhost) | `-h splunk-server.local` |
 | `-P, --port` | Splunk REST API port (default: 8089) | `-P 8089` |
 | `--splunk-home` | Splunk installation path | `--splunk-home /opt/splunk` |
+| `--apps` | Comma-separated list of apps to export **(NEW v4.1.0)** | `--apps "search,myapp,security"` |
+| `--all-apps` | Export all applications (default) | `--all-apps` |
+| `--quick` | Quick mode - skip analytics **(TESTING ONLY - see warning)** | `--quick` |
+| `--scoped` | Scope collections to selected apps only **(NEW v4.1.0)** | `--scoped` |
+| `--no-usage` | Skip usage analytics collection **(NEW v4.1.0)** | `--no-usage` |
+| `--no-rbac` | Skip RBAC/user collection **(NEW v4.1.0)** | `--no-rbac` |
 | `--anonymize` | Enable data anonymization (default) | `--anonymize` |
 | `--no-anonymize` | Disable data anonymization | `--no-anonymize` |
 | `-y, --yes` | Auto-confirm all prompts (non-interactive) | `-y` |
+| `-d, --debug` | Enable verbose debug logging **(NEW v4.1.0)** | `--debug` |
 | `--help` | Show help message | `--help` |
 
 ### 8.2 Non-Interactive Mode (Automation)
 
-Use `-y` or `--yes` to run the script without any prompts:
+Non-interactive mode is automatically enabled when username AND password are provided (via CLI arguments or environment variables):
 
 ```bash
 # Fully automated export
@@ -764,11 +782,90 @@ Use `-y` or `--yes` to run the script without any prompts:
   -u admin \
   -p 'YourPassword' \
   --splunk-home /opt/splunk \
-  --anonymize \
-  -y
+  --anonymize
 ```
 
-### 8.3 Environment Variables
+### 8.3 App-Scoped Export Mode (NEW in v4.1.0)
+
+For large environments with many apps, you can dramatically reduce export time by targeting specific apps:
+
+```bash
+# Export only specific apps (fastest option)
+./dynabridge-splunk-export.sh \
+  -u admin -p 'YourPassword' \
+  --apps "search,myapp,security_essentials" \
+  --quick
+
+# Scoped mode - exports app configs + only users/searches related to those apps
+./dynabridge-splunk-export.sh \
+  -u admin -p 'YourPassword' \
+  --apps "myapp,otherapp" \
+  --scoped
+```
+
+| Mode | What It Does | Use When |
+|------|-------------|----------|
+| `--quick` | App configs only, no global analytics | **Testing/validation only** - NOT for migration analysis |
+| `--scoped` | App configs + app-filtered users/usage | You want usage data but only for selected apps |
+| (default) | Full export of all apps + global analytics | **Recommended** - Full migration analysis |
+
+> **⚠️ CRITICAL WARNING: Do NOT use `--quick` for Migration Analysis**
+>
+> The `--quick` flag is intended **ONLY for testing and script validation**, not for actual migration planning. Using `--quick` eliminates critical data needed for migration analysis:
+>
+> - **Usage Analytics**: Who uses which dashboards/alerts, how often, and when last accessed
+> - **User & RBAC Data**: Migration audience identification, role mappings, permission structures
+> - **Search Activity**: Which saved searches are actively used vs. abandoned
+> - **Priority Assessment**: Data needed to determine migration priority and phasing
+>
+> **Without this data, you cannot:**
+> - Identify which assets are actually being used vs. unused/abandoned
+> - Understand who your migration audiences are
+> - Prioritize which dashboards/alerts to migrate first
+> - Make informed decisions about what may or may not be needed
+>
+> **Always use the default (full) export or `--scoped` for any export intended for migration analysis.**
+
+**Performance comparison:**
+
+| Environment Size | Full Export | --scoped | --quick |
+|-----------------|-------------|----------|---------|
+| Small (100 dashboards) | ~5 min | ~3 min | ~1 min |
+| Medium (500 dashboards) | ~15 min | ~8 min | ~3 min |
+| Large (2000+ dashboards) | ~45 min | ~15 min | ~5 min |
+| Enterprise (5000+ dashboards) | ~2 hours | ~30 min | ~10 min |
+
+### 8.4 Debug Mode (NEW in v4.1.0)
+
+When troubleshooting issues, enable debug mode to capture detailed logs:
+
+```bash
+./dynabridge-splunk-export.sh \
+  -u admin -p 'YourPassword' \
+  --apps myapp \
+  --debug
+```
+
+Debug mode provides:
+- **Console output**: Color-coded messages by category (API, SEARCH, TIMING, ERROR, WARN)
+- **Debug log file**: `export_debug.log` inside the export directory (included in the .tar.gz)
+- **Detailed timing**: Duration of each API call and search operation
+- **Configuration state**: All settings logged at startup
+- **API call tracking**: Every REST API call with HTTP status and response size
+- **Search job lifecycle**: Creation, polling, completion, and timeouts
+
+**Debug log categories:**
+| Category | Color | Description |
+|----------|-------|-------------|
+| ERROR | Red | Errors that prevented data collection |
+| WARN | Yellow | Warnings (retries, rate limits, missing data) |
+| API | Cyan | REST API calls with timing |
+| SEARCH | Magenta | Search job lifecycle |
+| TIMING | Blue | Operation durations |
+| CONFIG | Gray | Configuration settings |
+| ENV | Gray | Environment information |
+
+### 8.5 Environment Variables
 
 The script also supports environment variables (useful for container deployments):
 
@@ -784,7 +881,7 @@ export SPLUNK_ADMIN_PASSWORD="MySecurePassword"
 ./dynabridge-splunk-export.sh -y --splunk-home /opt/splunk
 ```
 
-### 8.4 CI/CD Pipeline Integration
+### 8.6 CI/CD Pipeline Integration
 
 Example for Jenkins/GitLab CI:
 
@@ -805,7 +902,7 @@ splunk_export:
       - dynabridge-export-*.tar.gz
 ```
 
-### 8.5 Enhanced Anonymization (v4.0)
+### 8.7 Enhanced Anonymization
 
 The v4.0 script now anonymizes additional sensitive data types:
 
@@ -822,7 +919,7 @@ The v4.0 script now anonymizes additional sensitive data types:
 
 This ensures your export can be safely shared with consultants or support teams.
 
-### 8.6 Enterprise Resilience Features (v4.0.0)
+### 8.8 Enterprise Resilience Features
 
 **NEW in v4.0.0**: The script now includes comprehensive enterprise-scale features for environments with 4000+ dashboards and 10K+ alerts.
 
@@ -1069,7 +1166,7 @@ When you run `./dynabridge-splunk-export.sh`, you'll see:
 ║                 🏢  SPLUNK ENTERPRISE EXPORT SCRIPT  🏢                       ║
 ║                                                                                ║
 ║          Complete Data Collection for Migration to Dynatrace Gen3            ║
-║                        Version 4.0.0                                    ║
+║                        Version 4.1.0                                    ║
 ║                                                                                ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 
@@ -1294,7 +1391,7 @@ Splunk admin password: ••••••••••••
 
   [8/8] Generating manifest and summary...
 ✓ manifest.json created
-✓ dynasplunk-env-summary.md created
+✓ dynabridge-env-summary.md created
 ```
 
 ### Step 8: Export Complete
@@ -1334,21 +1431,21 @@ Splunk admin password: ••••••••••••
 ║                                                                              ║
 ║  3. Review the summary report:                                               ║
 ║     cat dynabridge_export_splunk-sh01_20241203_152347/                       ║
-║         dynasplunk-env-summary.md                                            ║
+║         dynabridge-env-summary.md                                            ║
 ║                                                                              ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 ```
 
 ### What Success Looks Like
 
-After a successful export, you'll have a `.tar.gz` file. Extract it to see:
+After a successful export, you'll have a `.tar.gz` file. Extract it to see the v2 app-centric structure:
 
 ```bash
-$ tar -tzf dynabridge_export_splunk-sh01_20241203_152347.tar.gz | head -25
+$ tar -tzf dynabridge_export_splunk-sh01_20241203_152347.tar.gz | head -30
 
 dynabridge_export_splunk-sh01_20241203_152347/
 dynabridge_export_splunk-sh01_20241203_152347/manifest.json
-dynabridge_export_splunk-sh01_20241203_152347/dynasplunk-env-summary.md
+dynabridge_export_splunk-sh01_20241203_152347/dynabridge-env-summary.md
 dynabridge_export_splunk-sh01_20241203_152347/_export.log
 dynabridge_export_splunk-sh01_20241203_152347/_systeminfo/
 dynabridge_export_splunk-sh01_20241203_152347/_systeminfo/environment.json
@@ -1364,12 +1461,14 @@ dynabridge_export_splunk-sh01_20241203_152347/_usage_analytics/alert_execution_h
 dynabridge_export_splunk-sh01_20241203_152347/_indexes/
 dynabridge_export_splunk-sh01_20241203_152347/_indexes/index_stats.json
 dynabridge_export_splunk-sh01_20241203_152347/search/
+dynabridge_export_splunk-sh01_20241203_152347/search/dashboards/classic/          # v2 app-scoped
+dynabridge_export_splunk-sh01_20241203_152347/search/dashboards/studio/           # v2 app-scoped
 dynabridge_export_splunk-sh01_20241203_152347/search/local/props.conf
 dynabridge_export_splunk-sh01_20241203_152347/search/local/transforms.conf
 dynabridge_export_splunk-sh01_20241203_152347/search/local/savedsearches.conf
-dynabridge_export_splunk-sh01_20241203_152347/search/default/data/ui/views/
 dynabridge_export_splunk-sh01_20241203_152347/security_essentials/
-dynabridge_export_splunk-sh01_20241203_152347/dashboard_studio/
+dynabridge_export_splunk-sh01_20241203_152347/security_essentials/dashboards/classic/
+dynabridge_export_splunk-sh01_20241203_152347/security_essentials/dashboards/studio/
 ```
 
 ### If Something Goes Wrong
@@ -1427,7 +1526,7 @@ Archive OK
 
 ## Sample Output Files
 
-### Example: dynasplunk-env-summary.md
+### Example: dynabridge-env-summary.md
 
 This human-readable summary report is generated in the export directory:
 
@@ -1436,7 +1535,7 @@ This human-readable summary report is generated in the export directory:
 
 **Export Date**: 2025-12-03T20:23:47Z
 **Hostname**: splunk-sh01.acme-corp.com
-**Export Tool Version**: 4.0.0
+**Export Tool Version**: 4.1.0
 
 ---
 
@@ -1523,7 +1622,7 @@ This human-readable summary report is generated in the export directory:
 
 ---
 
-*Generated by DynaBridge Splunk Export Tool v4.0.0*
+*Generated by DynaBridge Splunk Export Tool v4.1.0*
 ```
 
 ### Example: manifest.json (Schema)

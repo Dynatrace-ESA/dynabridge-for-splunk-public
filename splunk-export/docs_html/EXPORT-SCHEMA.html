@@ -280,7 +280,7 @@ Every export produces a <code>.tar.gz</code> archive with this <strong>exact</st
 │
 ├── manifest.json                    # REQUIRED - Export metadata
 ├── _anonymization_report.json       # OPTIONAL - Only present if anonymization enabled
-├── dynasplunk-env-summary.md        # REQUIRED - Human-readable summary
+├── dynabridge-env-summary.md        # REQUIRED - Human-readable summary
 ├── export.log                       # REQUIRED - Export process log
 │
 ├── _systeminfo/                     # REQUIRED - System information
@@ -317,11 +317,12 @@ Every export produces a <code>.tar.gz</code> archive with this <strong>exact</st
 ├── _audit_sample/                   # OPTIONAL - Audit log sample
 │   └── audit_sample.log
 │
-├── dashboard_studio/                # OPTIONAL - Dashboard Studio exports
-│   ├── dashboards_list.json         # List of all dashboards
-│   └── &lt;dashboard_name&gt;.json        # Individual dashboard definitions
-│
 └── &lt;app_name&gt;/                      # One directory per exported app
+    ├── dashboards/                  # v2 app-centric structure (v4.2.0+)
+    │   ├── classic/                 # Classic XML dashboards for this app
+    │   │   └── *.xml
+    │   └── studio/                  # Dashboard Studio JSON for this app
+    │       └── *.json
     ├── default/
     │   ├── props.conf
     │   ├── transforms.conf
@@ -338,8 +339,8 @@ Every export produces a <code>.tar.gz</code> archive with this <strong>exact</st
     │   ├── commands.conf
     │   └── data/
     │       └── ui/
-    │           └── views/
-    │               └── *.xml        # Classic dashboards
+    │           └── views/           # Legacy location (v1 archives only)
+    │               └── *.xml
     ├── local/
     │   └── (same structure as default/)
     └── lookups/                     # OPTIONAL
@@ -424,8 +425,8 @@ These files are <strong>direct dumps from Splunk REST APIs</strong> - essentiall
 <tr><td><code>_rbac/</code></td><td><code>roles.json</code></td><td><code>GET /services/authorization/roles</code></td><td>Role definitions</td></tr>
 <tr><td><code>_indexes/</code></td><td><code>indexes_detailed.json</code></td><td><code>GET /services/data/indexes</code></td><td>Index configurations</td></tr>
 <tr><td><code>_indexes/</code></td><td><code>data_inputs.json</code></td><td><code>GET /services/data/inputs/all</code></td><td>Data input definitions</td></tr>
-<tr><td><code>dashboard_studio/</code></td><td><code>dashboards_list.json</code></td><td><code>GET /servicesNS/-/-/data/ui/views</code></td><td>Dashboard Studio list</td></tr>
-<tr><td><code>dashboard_studio/</code></td><td><code>{dashboard_name}.json</code></td><td><code>GET /servicesNS/{owner}/{app}/data/ui/views/{name}</code></td><td>Individual dashboards</td></tr>
+<tr><td><code><app>/dashboards/studio/</code></td><td><code>{dashboard_name}.json</code></td><td><code>GET /servicesNS/{owner}/{app}/data/ui/views/{name}</code></td><td>Dashboard Studio JSON (v2 structure)</td></tr>
+<tr><td><code><app>/dashboards/classic/</code></td><td><code>{dashboard_name}.xml</code></td><td><code>GET /servicesNS/{owner}/{app}/data/ui/views/{name}</code></td><td>Classic XML dashboards (v2 structure)</td></tr>
 </tbody>
 </table>
 <p>
@@ -825,8 +826,8 @@ This section helps answer critical migration questions:
 </p>
 <pre><code class="language-json">{
   &quot;results&quot;: [
-    {&quot;dashboard&quot;: &quot;security_overview&quot;, &quot;app&quot;: &quot;security_app&quot;, &quot;owner&quot;: &quot;jsmith&quot;, &quot;sharing&quot;: &quot;app&quot;},
-    {&quot;dashboard&quot;: &quot;incident_tracker&quot;, &quot;app&quot;: &quot;security_app&quot;, &quot;owner&quot;: &quot;jsmith&quot;, &quot;sharing&quot;: &quot;global&quot;},
+    {&quot;dashboard&quot;: &quot;security_overview&quot;, &quot;app&quot;: &quot;security_app&quot;, &quot;owner&quot;: &quot;splunk_user&quot;, &quot;sharing&quot;: &quot;app&quot;},
+    {&quot;dashboard&quot;: &quot;incident_tracker&quot;, &quot;app&quot;: &quot;security_app&quot;, &quot;owner&quot;: &quot;splunk_user&quot;, &quot;sharing&quot;: &quot;global&quot;},
     {&quot;dashboard&quot;: &quot;system_health&quot;, &quot;app&quot;: &quot;ops_monitoring&quot;, &quot;owner&quot;: &quot;admin&quot;, &quot;sharing&quot;: &quot;app&quot;}
   ]
 }</code></pre>
@@ -905,7 +906,7 @@ DynaBridge validates exports against these rules:
 <h3>SHOULD Have (Warnings If Missing)</h3>
 <ol>
 <li><code>export.log</code> for troubleshooting</li>
-<li><code>dynasplunk-env-summary.md</code> for human review</li>
+<li><code>dynabridge-env-summary.md</code> for human review</li>
 <li><code>manifest.json.statistics</code> section populated</li>
 <li><code>manifest.json.usage_intelligence</code> section (for migration prioritization)</li>
 </ol>

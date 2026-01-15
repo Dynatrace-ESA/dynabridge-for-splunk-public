@@ -1,8 +1,15 @@
 #!/bin/bash
+# LINE ENDING FIX: Auto-detect and fix Windows CRLF line endings
+# If you see "$'\r': command not found" errors, this block will auto-fix and re-run
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]] && grep -q $'\r' "$0" 2>/dev/null; then
+    echo "Detected Windows line endings (CRLF). Converting to Unix (LF)..."
+    sed -i.bak 's/\r$//' "$0" && rm -f "$0.bak"
+    exec bash "$0" "$@"
+fi
 
 ################################################################################
 #
-#  DynaBridge Splunk Export Script v4.0.1
+#  DynaBridge Splunk Export Script v4.2.0
 #
 #  Complete Splunk Environment Data Collection for Migration to Dynatrace
 #
@@ -71,7 +78,7 @@ set -o pipefail  # Fail on pipe errors
 # SCRIPT CONFIGURATION
 # =============================================================================
 
-SCRIPT_VERSION="4.0.1"
+SCRIPT_VERSION="4.2.0"
 SCRIPT_NAME="DynaBridge Splunk Export"
 
 # ANSI color codes
@@ -135,6 +142,21 @@ COLLECT_AUDIT=false
 ANONYMIZE_DATA=true
 AUTO_CONFIRM=false
 USAGE_PERIOD="30d"
+
+# App-scoped collection mode - when true, limits all collections to selected apps only
+# This dramatically reduces export time when only specific apps are selected
+# Auto-enabled when --apps is used (unless --all-apps is also specified)
+SCOPE_TO_APPS=false
+
+# Quick mode - skips expensive global analytics entirely, just collects app configs
+QUICK_MODE=false
+
+# Non-interactive mode flag (set automatically when all params provided)
+NON_INTERACTIVE=false
+
+# Debug mode - enables verbose logging for troubleshooting
+DEBUG_MODE=false
+DEBUG_LOG_FILE=""
 
 # Rate limiting (to avoid impacting Splunk performance)
 API_DELAY_SECONDS=0.25     # Delay between API calls (seconds) - 250ms
@@ -208,6 +230,141 @@ print_line() {
   local char="${1:-─}"
   local width="${2:-72}"
   printf '%*s\n' "$width" '' | tr ' ' "$char"
+}
+
+# =============================================================================
+# DEBUG LOGGING FUNCTIONS
+# =============================================================================
+
+# Initialize debug log file
+init_debug_log() {
+  if [ "$DEBUG_MODE" = "true" ]; then
+    DEBUG_LOG_FILE="${EXPORT_DIR:-/tmp}/export_debug.log"
+    echo "===============================================================================" > "$DEBUG_LOG_FILE"
+    echo "DynaBridge Export Debug Log" >> "$DEBUG_LOG_FILE"
+    echo "Started: $(date -Iseconds 2>/dev/null || date)" >> "$DEBUG_LOG_FILE"
+    echo "Script Version: $SCRIPT_VERSION" >> "$DEBUG_LOG_FILE"
+    echo "===============================================================================" >> "$DEBUG_LOG_FILE"
+    echo "" >> "$DEBUG_LOG_FILE"
+
+    # Log environment info
+    debug_log "ENV" "Bash Version: ${BASH_VERSION:-unknown}"
+    debug_log "ENV" "OS: $(uname -s 2>/dev/null || echo 'unknown') $(uname -r 2>/dev/null || echo '')"
+    debug_log "ENV" "Hostname: $(get_hostname)"
+    debug_log "ENV" "User: $(whoami 2>/dev/null || echo 'unknown')"
+    debug_log "ENV" "PWD: $(pwd)"
+    debug_log "ENV" "curl version: $(curl --version 2>/dev/null | head -1 || echo 'not found')"
+
+    echo -e "${CYAN}[DEBUG] Debug logging enabled → $DEBUG_LOG_FILE${NC}"
+  fi
+}
+
+# Log debug message (only when DEBUG_MODE is true)
+# Usage: debug_log "CATEGORY" "message"
+debug_log() {
+  if [ "$DEBUG_MODE" != "true" ]; then
+    return
+  fi
+
+  local category="${1:-INFO}"
+  local message="$2"
+  local timestamp=$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || date)
+
+  # Write to debug log file
+  if [ -n "$DEBUG_LOG_FILE" ] && [ -w "$(dirname "$DEBUG_LOG_FILE" 2>/dev/null || echo "/tmp")" ]; then
+    echo "[$timestamp] [$category] $message" >> "$DEBUG_LOG_FILE"
+  fi
+
+  # Also show on console in debug mode (with color coding)
+  case "$category" in
+    ERROR)   echo -e "${RED}[DEBUG:$category] $message${NC}" ;;
+    WARN)    echo -e "${YELLOW}[DEBUG:$category] $message${NC}" ;;
+    API)     echo -e "${CYAN}[DEBUG:$category] $message${NC}" ;;
+    SEARCH)  echo -e "${MAGENTA}[DEBUG:$category] $message${NC}" ;;
+    TIMING)  echo -e "${BLUE}[DEBUG:$category] $message${NC}" ;;
+    *)       echo -e "${GRAY}[DEBUG:$category] $message${NC}" ;;
+  esac
+}
+
+# Log API call details (redacts sensitive info)
+# Usage: debug_api_call "METHOD" "URL" "HTTP_CODE" "RESPONSE_SIZE" "DURATION_MS"
+debug_api_call() {
+  if [ "$DEBUG_MODE" != "true" ]; then
+    return
+  fi
+
+  local method="$1"
+  local url="$2"
+  local http_code="$3"
+  local response_size="${4:-unknown}"
+  local duration_ms="${5:-unknown}"
+
+  # Redact sensitive parts of URL
+  local safe_url=$(echo "$url" | sed 's/password=[^&]*/password=REDACTED/g' | sed 's/token=[^&]*/token=REDACTED/g')
+
+  debug_log "API" "$method $safe_url → HTTP $http_code (${response_size} bytes, ${duration_ms}ms)"
+}
+
+# Log search job lifecycle
+# Usage: debug_search_job "ACTION" "SID" "DETAILS"
+debug_search_job() {
+  if [ "$DEBUG_MODE" != "true" ]; then
+    return
+  fi
+
+  local action="$1"
+  local sid="$2"
+  local details="${3:-}"
+
+  debug_log "SEARCH" "[$action] sid=$sid $details"
+}
+
+# Log timing for operations
+# Usage: debug_timing "OPERATION" "DURATION_SECONDS"
+debug_timing() {
+  if [ "$DEBUG_MODE" != "true" ]; then
+    return
+  fi
+
+  local operation="$1"
+  local duration="$2"
+
+  debug_log "TIMING" "$operation completed in ${duration}s"
+}
+
+# Log current configuration state
+debug_config_state() {
+  if [ "$DEBUG_MODE" != "true" ]; then
+    return
+  fi
+
+  debug_log "CONFIG" "SPLUNK_HOST=$SPLUNK_HOST:$SPLUNK_PORT"
+  debug_log "CONFIG" "SPLUNK_HOME=$SPLUNK_HOME"
+  debug_log "CONFIG" "EXPORT_ALL_APPS=$EXPORT_ALL_APPS"
+  debug_log "CONFIG" "SCOPE_TO_APPS=$SCOPE_TO_APPS"
+  debug_log "CONFIG" "QUICK_MODE=$QUICK_MODE"
+  debug_log "CONFIG" "COLLECT_RBAC=$COLLECT_RBAC"
+  debug_log "CONFIG" "COLLECT_USAGE=$COLLECT_USAGE"
+  debug_log "CONFIG" "COLLECT_INDEXES=$COLLECT_INDEXES"
+  debug_log "CONFIG" "USAGE_PERIOD=$USAGE_PERIOD"
+  debug_log "CONFIG" "SELECTED_APPS=(${SELECTED_APPS[*]})"
+  debug_log "CONFIG" "BATCH_SIZE=$BATCH_SIZE"
+  debug_log "CONFIG" "API_TIMEOUT=$API_TIMEOUT"
+}
+
+# Finalize debug log
+finalize_debug_log() {
+  if [ "$DEBUG_MODE" = "true" ] && [ -n "$DEBUG_LOG_FILE" ]; then
+    echo "" >> "$DEBUG_LOG_FILE"
+    echo "===============================================================================" >> "$DEBUG_LOG_FILE"
+    echo "Export Completed: $(date -Iseconds 2>/dev/null || date)" >> "$DEBUG_LOG_FILE"
+    echo "Total Errors: $STATS_ERRORS" >> "$DEBUG_LOG_FILE"
+    echo "Total API Calls: $STATS_API_CALLS" >> "$DEBUG_LOG_FILE"
+    echo "Total Retries: $STATS_API_RETRIES" >> "$DEBUG_LOG_FILE"
+    echo "===============================================================================" >> "$DEBUG_LOG_FILE"
+
+    echo -e "${GREEN}[DEBUG] Debug log saved to: $DEBUG_LOG_FILE${NC}"
+  fi
 }
 
 # Get hostname with multiple fallbacks (for containers without hostname command)
@@ -1005,8 +1162,8 @@ prompt_yn() {
   local default="${2:-Y}"
   local answer
 
-  # If AUTO_CONFIRM is set, return based on default
-  if [ "$AUTO_CONFIRM" = true ]; then
+  # If AUTO_CONFIRM or NON_INTERACTIVE is set, return based on default
+  if [ "$AUTO_CONFIRM" = true ] || [ "$NON_INTERACTIVE" = "true" ]; then
     echo -e "${DIM}[AUTO] $prompt: ${default}${NC}"
     case "$default" in
       Y|y|yes) return 0 ;;
@@ -1042,8 +1199,8 @@ prompt_input() {
   local current_value
   eval "current_value=\$$var_name"
 
-  # If AUTO_CONFIRM is set, use existing value or default without prompting
-  if [ "$AUTO_CONFIRM" = true ]; then
+  # If AUTO_CONFIRM or NON_INTERACTIVE is set, use existing value or default without prompting
+  if [ "$AUTO_CONFIRM" = true ] || [ "$NON_INTERACTIVE" = "true" ]; then
     if [ -n "$current_value" ]; then
       echo -e "${DIM}[AUTO] $prompt: ${current_value}${NC}"
       return
@@ -1076,14 +1233,17 @@ prompt_password() {
   local var_name="$2"
   local answer
 
-  # If AUTO_CONFIRM is set and password already provided via CLI, skip prompt
-  if [ "$AUTO_CONFIRM" = true ]; then
+  # If AUTO_CONFIRM or NON_INTERACTIVE is set and password already provided via CLI, skip prompt
+  if [ "$AUTO_CONFIRM" = true ] || [ "$NON_INTERACTIVE" = "true" ]; then
     local current_value
     eval "current_value=\$$var_name"
     if [ -n "$current_value" ]; then
       echo -e "${DIM}[AUTO] $prompt: ********${NC}"
       return
     fi
+    # No password provided in non-interactive mode - this is an error
+    echo -e "${RED}[ERROR] Password required but not provided in non-interactive mode${NC}"
+    return 1
   fi
 
   echo -ne "${YELLOW}$prompt: ${NC}"
@@ -1252,8 +1412,10 @@ splunk_api_call() {
   local delay=$RETRY_DELAY
   local http_code=""
   local success=false
+  local start_time=$(date +%s%3N 2>/dev/null || date +%s)
 
   ((STATS_API_CALLS++))
+  debug_log "API" "→ GET $endpoint (attempt 1/$MAX_RETRIES)"
 
   while [ $attempt -le $MAX_RETRIES ]; do
     # Make the API call with timeout
@@ -1266,6 +1428,11 @@ splunk_api_call() {
       "${extra_args[@]}" \
       "$url" 2>/dev/null)
 
+    local end_time=$(date +%s%3N 2>/dev/null || date +%s)
+    local duration=$((end_time - start_time))
+    local response_size=$(wc -c < "$output_file" 2>/dev/null || echo "0")
+    debug_api_call "GET" "$endpoint" "$http_code" "$response_size" "$duration"
+
     case "$http_code" in
       200)
         success=true
@@ -1273,6 +1440,7 @@ splunk_api_call() {
         ;;
       429)
         # Rate limited - exponential backoff
+        debug_log "WARN" "Rate limited (429) on $endpoint. Backoff ${delay}s"
         log "Rate limited (429). Waiting ${delay}s before retry $attempt/$MAX_RETRIES"
         ((STATS_API_RETRIES++))
         sleep "$delay"
@@ -1280,6 +1448,7 @@ splunk_api_call() {
         ;;
       500|502|503|504)
         # Server error - retry with backoff
+        debug_log "WARN" "Server error ($http_code) on $endpoint. Retry in ${delay}s"
         log "Server error ($http_code). Retry $attempt/$MAX_RETRIES in ${delay}s"
         ((STATS_API_RETRIES++))
         sleep "$delay"
@@ -1287,11 +1456,13 @@ splunk_api_call() {
         ;;
       401|403)
         # Auth error - don't retry
+        debug_log "ERROR" "Auth failed ($http_code) on $endpoint"
         log_error "api" "$endpoint" "Authentication error ($http_code)"
         return 1
         ;;
       000)
         # Timeout or connection error
+        debug_log "WARN" "Timeout/connection error on $endpoint. Retry in ${delay}s"
         log "Timeout/connection error. Retry $attempt/$MAX_RETRIES in ${delay}s"
         ((STATS_API_RETRIES++))
         sleep "$delay"
@@ -1944,7 +2115,10 @@ show_export_timing_stats() {
 # =============================================================================
 
 show_banner() {
-  clear
+  # Only clear screen in interactive mode (when running in a terminal)
+  if [ -t 0 ] && [ -t 1 ] && [ "$NON_INTERACTIVE" != "true" ]; then
+    clear
+  fi
   echo ""
   echo -e "${CYAN}╔══════════════════════════════════════════════════════════════════════════════╗${NC}"
   echo -e "${CYAN}║${NC}                                                                                ${CYAN}║${NC}"
@@ -1959,6 +2133,9 @@ show_banner() {
   echo -e "${CYAN}║${NC}                                                                                ${CYAN}║${NC}"
   echo -e "${CYAN}║${NC}          ${DIM}Complete Data Collection for Migration to Dynatrace Gen3${NC}            ${CYAN}║${NC}"
   echo -e "${CYAN}║${NC}                        ${DIM}Version $SCRIPT_VERSION${NC}                                    ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}                                                                                ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}   ${DIM}Developed for Dynatrace One by Enterprise Solutions & Architecture${NC}      ${CYAN}║${NC}"
+  echo -e "${CYAN}║${NC}                  ${DIM}An ACE Services Division of Dynatrace${NC}                        ${CYAN}║${NC}"
   echo -e "${CYAN}║${NC}                                                                                ${CYAN}║${NC}"
   echo -e "${CYAN}╚══════════════════════════════════════════════════════════════════════════════╝${NC}"
   echo ""
@@ -2547,6 +2724,12 @@ detect_splunk_flavor() {
 # =============================================================================
 
 select_applications() {
+  # If apps were pre-selected via --apps flag, skip interactive selection
+  if [ ${#SELECTED_APPS[@]} -gt 0 ]; then
+    success "Using pre-selected apps from --apps flag: ${SELECTED_APPS[*]}"
+    return 0
+  fi
+
   print_info_box "STEP 3: SELECT APPLICATIONS TO EXPORT" \
     "" \
     "${WHITE}WHY WE ASK:${NC}" \
@@ -2689,7 +2872,9 @@ select_applications() {
 
       for input_app in "${input_apps[@]}"; do
         # Trim whitespace
-        input_app=$(echo "$input_app" | xargs)
+        # Trim whitespace (pure bash, portable)
+        input_app="${input_app#"${input_app%%[![:space:]]*}"}"
+        input_app="${input_app%"${input_app##*[![:space:]]}"}"
 
         # Check if app exists
         local found=false
@@ -2863,7 +3048,9 @@ select_data_categories() {
   if [ -n "$toggle_input" ]; then
     IFS=',' read -ra toggles <<< "$toggle_input"
     for toggle in "${toggles[@]}"; do
-      toggle=$(echo "$toggle" | xargs)
+      # Trim whitespace (pure bash, portable)
+      toggle="${toggle#"${toggle%%[![:space:]]*}"}"
+      toggle="${toggle%"${toggle##*[![:space:]]}"}"
       case "$toggle" in
         1) COLLECT_CONFIGS=false; info "Configurations: OFF" ;;
         2) COLLECT_DASHBOARDS=false; info "Dashboards: OFF" ;;
@@ -3068,14 +3255,17 @@ create_export_directory() {
   mkdir -p "$EXPORT_DIR/dynabridge_analytics/indexes"
   # Splunk configurations
   mkdir -p "$EXPORT_DIR/_system/local"
-  # Dashboards separated by type
-  mkdir -p "$EXPORT_DIR/dashboards_classic"
-  mkdir -p "$EXPORT_DIR/dashboards_studio"
+  # NOTE: Dashboards are now stored in app-scoped folders (v2 structure)
+  # $EXPORT_DIR/{AppName}/dashboards/classic/ and /studio/
+  # This prevents name collisions when multiple apps have same-named dashboards
 
   touch "$LOG_FILE"
   log "DynaBridge Export Started"
   log "Script Version: $SCRIPT_VERSION"
   log "Export Directory: $EXPORT_DIR"
+
+  # Initialize debug logging if enabled
+  init_debug_log
 
   # Initialize Phase 1 resilience tracking
   init_resilience_tracking
@@ -3281,6 +3471,17 @@ collect_dashboard_studio() {
       > "$temp_file" 2>/dev/null
 
     if [ -s "$temp_file" ]; then
+      # Extract the owning app from the dashboard's ACL (v2 structure)
+      local dashboard_app=""
+      dashboard_app=$(grep -oP '"app"\s*:\s*"\K[^"]+' "$temp_file" 2>/dev/null | head -1)
+      if [ -z "$dashboard_app" ]; then
+        dashboard_app="unknown_app"
+      fi
+
+      # Create app-scoped dashboard folders (v2 structure)
+      mkdir -p "$EXPORT_DIR/$dashboard_app/dashboards/classic"
+      mkdir -p "$EXPORT_DIR/$dashboard_app/dashboards/studio"
+
       # Determine dashboard type by examining content
       # Dashboard Studio v2 dashboards can be identified by:
       # 1. eai:data contains "splunk-dashboard-studio" template reference (example dashboards)
@@ -3320,8 +3521,8 @@ collect_dashboard_studio() {
       fi
 
       if [ "$is_studio" = true ]; then
-        # Dashboard Studio - save with metadata about content type
-        mv "$temp_file" "$EXPORT_DIR/dashboards_studio/${dashboard_name}.json"
+        # Dashboard Studio - save to app-scoped studio folder (v2 structure)
+        mv "$temp_file" "$EXPORT_DIR/$dashboard_app/dashboards/studio/${dashboard_name}.json"
         ((studio_count++))
 
         # Extract JSON definition if present and save separately for easier processing
@@ -3329,7 +3530,7 @@ collect_dashboard_studio() {
           # Try to extract the definition JSON from CDATA
           # The JSON is inside: <definition><![CDATA[{...}]]></definition>
           # In the JSON response, this is escaped as: \\u003cdefinition\\u003e\\u003c![CDATA[{...}]]\\u003e
-          local definition_file="$EXPORT_DIR/dashboards_studio/${dashboard_name}_definition.json"
+          local definition_file="$EXPORT_DIR/$dashboard_app/dashboards/studio/${dashboard_name}_definition.json"
 
           # Extract definition content using Python for reliable JSON/CDATA parsing
           python3 -c "
@@ -3338,7 +3539,7 @@ import re
 import sys
 
 try:
-    with open('$EXPORT_DIR/dashboards_studio/${dashboard_name}.json') as f:
+    with open('$EXPORT_DIR/$dashboard_app/dashboards/studio/${dashboard_name}.json') as f:
         data = json.load(f)
 
     eai_data = data.get('entry', [{}])[0].get('content', {}).get('eai:data', '')
@@ -3367,7 +3568,7 @@ except Exception as e:
           # Try to extract definition from splunk-dashboard-studio app's compiled JS
           local studio_js_path="$SPLUNK_HOME/etc/apps/splunk-dashboard-studio/appserver/static/build/examples/${dashboard_name}.js"
           if [ -f "$studio_js_path" ]; then
-            local definition_file="$EXPORT_DIR/dashboards_studio/${dashboard_name}_definition.json"
+            local definition_file="$EXPORT_DIR/$dashboard_app/dashboards/studio/${dashboard_name}_definition.json"
             # Extract JSON definition from compiled JS using Python
             python3 -c "
 import re
@@ -3460,16 +3661,19 @@ except Exception as e:
           fi
         fi
 
-        log "Exported Dashboard Studio: $dashboard_name"
+        log "Exported Dashboard Studio: $dashboard_app/$dashboard_name"
+        echo "    → Studio: $dashboard_app/$dashboard_name"
       else
-        # Classic dashboard (pure XML without Dashboard Studio reference)
-        mv "$temp_file" "$EXPORT_DIR/dashboards_classic/${dashboard_name}.json"
+        # Classic dashboard - save to app-scoped classic folder (v2 structure)
+        mv "$temp_file" "$EXPORT_DIR/$dashboard_app/dashboards/classic/${dashboard_name}.json"
         ((classic_count++))
-        log "Exported Classic Dashboard: $dashboard_name"
+        log "Exported Classic Dashboard: $dashboard_app/$dashboard_name"
+        echo "    → Classic: $dashboard_app/$dashboard_name"
       fi
     else
       ((failed_count++))
       log "Failed to export: $dashboard_name"
+      echo "    ✗ Failed: $dashboard_name"
       rm -f "$temp_file" 2>/dev/null
     fi
 
@@ -3539,6 +3743,62 @@ collect_rbac() {
 
   progress "Collecting users, roles, and groups..."
 
+  # =========================================================================
+  # APP-SCOPED RBAC COLLECTION
+  # When scoped mode is enabled, only collect users who have accessed the
+  # selected apps. This dramatically reduces the user list in large environments.
+  # =========================================================================
+  if [ "$SCOPE_TO_APPS" = "true" ] && [ ${#SELECTED_APPS[@]} -gt 0 ]; then
+    info "App-scoped mode: Collecting users who accessed selected apps only"
+
+    # Build app filter for audit search
+    local app_filter=$(get_app_filter "app")
+
+    # Get users who have activity in the selected apps (via _audit)
+    # This searches audit logs for search activity within the selected apps
+    local user_search="search index=_audit action=search ${app_filter} earliest=-${USAGE_PERIOD} | stats count as activity, latest(_time) as last_active by user | sort -activity"
+
+    # Create a temporary search job to get active users in these apps
+    local temp_file=$(mktemp)
+    local http_code=$(curl -k -s -w "%{http_code}" -o "$temp_file" \
+      -u "${SPLUNK_USER}:${SPLUNK_PASSWORD}" \
+      "https://${SPLUNK_HOST}:${SPLUNK_PORT}/services/search/jobs" \
+      -d "output_mode=json" \
+      -d "earliest_time=-${USAGE_PERIOD}" \
+      -d "latest_time=now" \
+      --data-urlencode "search=$user_search" \
+      2>/dev/null)
+
+    if [ "$http_code" = "201" ]; then
+      local sid=$(grep -o '"sid":"[^"]*"' "$temp_file" | cut -d'"' -f4)
+      if [ -n "$sid" ]; then
+        # Wait for search to complete (max 60 seconds)
+        local waited=0
+        local is_done="false"
+        while [ "$is_done" != "true" ] && [ $waited -lt 60 ]; do
+          sleep 2
+          waited=$((waited + 2))
+          local status=$(curl -k -s -G -u "${SPLUNK_USER}:${SPLUNK_PASSWORD}" \
+            "https://${SPLUNK_HOST}:${SPLUNK_PORT}/services/search/jobs/$sid" \
+            -d "output_mode=json" 2>/dev/null)
+          is_done=$(echo "$status" | grep -o '"isDone":[^,}]*' | cut -d: -f2 | tr -d ' ')
+        done
+
+        if [ "$is_done" = "true" ]; then
+          curl -k -s -G -u "${SPLUNK_USER}:${SPLUNK_PASSWORD}" \
+            "https://${SPLUNK_HOST}:${SPLUNK_PORT}/services/search/jobs/$sid/results" \
+            -d "output_mode=json" -d "count=0" \
+            > "$EXPORT_DIR/dynabridge_analytics/rbac/users_active_in_apps.json" 2>/dev/null
+
+          local active_users=$(grep -c '"user"' "$EXPORT_DIR/dynabridge_analytics/rbac/users_active_in_apps.json" 2>/dev/null | tr -d ' ')
+          success "Found $active_users users with activity in selected apps"
+        fi
+      fi
+    fi
+    rm -f "$temp_file"
+  fi
+
+  # Always collect full user list from REST API (for reference)
   # Users (use -G to force GET request)
   curl -k -s -G -u "${SPLUNK_USER}:${SPLUNK_PASSWORD}" \
     "https://${SPLUNK_HOST}:${SPLUNK_PORT}/services/authentication/users" \
@@ -3569,6 +3829,76 @@ collect_rbac() {
   success "Collected $user_count users and roles"
 }
 
+# =============================================================================
+# APP-SCOPED FILTER HELPERS
+# =============================================================================
+
+# Build SPL filter for selected apps
+# Usage: get_app_filter "app" -> (app="app1" OR app="app2")
+# Usage: get_app_filter "eai:acl.app" -> (eai:acl.app="app1" OR eai:acl.app="app2")
+get_app_filter() {
+  local field="${1:-app}"
+
+  if [ "$SCOPE_TO_APPS" != "true" ] || [ ${#SELECTED_APPS[@]} -eq 0 ]; then
+    # No filtering - return empty string
+    echo ""
+    return
+  fi
+
+  # Build OR clause: (app="app1" OR app="app2" OR ...)
+  local filter="("
+  local first=true
+  for app in "${SELECTED_APPS[@]}"; do
+    if [ "$first" = "true" ]; then
+      filter+="${field}=\"${app}\""
+      first=false
+    else
+      filter+=" OR ${field}=\"${app}\""
+    fi
+  done
+  filter+=")"
+
+  echo "$filter"
+}
+
+# Build SPL IN clause for selected apps
+# Usage: get_app_in_clause "app" -> app IN ("app1", "app2")
+get_app_in_clause() {
+  local field="${1:-app}"
+
+  if [ "$SCOPE_TO_APPS" != "true" ] || [ ${#SELECTED_APPS[@]} -eq 0 ]; then
+    echo ""
+    return
+  fi
+
+  # Build IN clause: app IN ("app1", "app2", ...)
+  local apps_quoted=""
+  local first=true
+  for app in "${SELECTED_APPS[@]}"; do
+    if [ "$first" = "true" ]; then
+      apps_quoted+="\"${app}\""
+      first=false
+    else
+      apps_quoted+=", \"${app}\""
+    fi
+  done
+
+  echo "${field} IN (${apps_quoted})"
+}
+
+# Build where clause for pipe filtering
+# Usage: get_app_where_clause "app" -> | where app IN ("app1", "app2")
+get_app_where_clause() {
+  local field="${1:-app}"
+  local in_clause=$(get_app_in_clause "$field")
+
+  if [ -n "$in_clause" ]; then
+    echo "| where $in_clause"
+  else
+    echo ""
+  fi
+}
+
 collect_usage_analytics() {
   if [ -z "$SPLUNK_USER" ]; then
     warning "Skipping usage analytics (no REST API access)"
@@ -3577,6 +3907,22 @@ collect_usage_analytics() {
 
   if [ "$COLLECT_USAGE" = false ]; then
     return 0
+  fi
+
+  # =========================================================================
+  # APP-SCOPED ANALYTICS
+  # When scoped mode is enabled, filter all searches to selected apps only.
+  # This dramatically reduces search time and result size in large environments.
+  # =========================================================================
+  local app_filter=""
+  local app_where=""
+  if [ "$SCOPE_TO_APPS" = "true" ] && [ ${#SELECTED_APPS[@]} -gt 0 ]; then
+    app_filter=$(get_app_filter "app")
+    app_where=$(get_app_where_clause "app")
+    echo ""
+    echo -e "  ${CYAN}ℹ APP-SCOPED ANALYTICS: Filtering to ${#SELECTED_APPS[@]} app(s)${NC}"
+    echo -e "  ${DIM}  Apps: ${SELECTED_APPS[*]}${NC}"
+    echo ""
   fi
 
   # Define collection tasks for progress tracking
@@ -3608,6 +3954,10 @@ collect_usage_analytics() {
     local output_file="$2"
     local description="$3"
     local max_wait="${4:-300}"  # Default 5 minutes - enterprise searches can be slow
+    local search_start_time=$(date +%s)
+
+    debug_log "SEARCH" "Starting: $description"
+    debug_log "SEARCH" "Query: $(echo "$search_query" | head -c 200)..."
 
     # Rate limiting: pause before making API call
     log "Rate limit: waiting ${API_DELAY_SECONDS}s before search..."
@@ -3672,11 +4022,14 @@ collect_usage_analytics() {
       local error_msg=$(echo "$job_response" | grep -o '"message":"[^"]*"' | head -1 | cut -d'"' -f4)
       [ -z "$error_msg" ] && error_msg="Unknown error creating search job"
 
+      debug_log "ERROR" "Search job creation failed for '$description': $error_msg"
       log "SEARCH CREATE FAILED for '$description': $error_msg"
       echo "{\"error\": \"search_create_failed\", \"description\": \"$description\", \"message\": \"$error_msg\", \"http_code\": \"$http_code\", \"query_preview\": \"$(echo "$search_query" | head -c 200)\"}" > "$output_file"
       ((STATS_ERRORS++))
       return 1
     fi
+
+    debug_search_job "CREATED" "$sid" "for '$description'"
 
     # Wait for search to complete with progress indication
     local waited=0
@@ -3712,15 +4065,20 @@ collect_usage_analytics() {
         2>/dev/null)
 
       if [ "$http_code" != "200" ]; then
+        debug_log "ERROR" "Results fetch failed for sid=$sid: HTTP $http_code"
         log "RESULTS FETCH FAILED for '$description': HTTP $http_code"
         echo "{\"error\": \"results_fetch_failed\", \"description\": \"$description\", \"http_code\": \"$http_code\"}" > "$output_file"
         ((STATS_ERRORS++))
         return 1
       fi
 
+      local search_duration=$(($(date +%s) - search_start_time))
+      debug_search_job "COMPLETED" "$sid" "in ${search_duration}s"
+      debug_timing "Search: $description" "$search_duration"
       log "Completed search: $description (${waited}s)"
       return 0
     else
+      debug_search_job "TIMEOUT" "$sid" "after ${max_wait}s"
       log "TIMEOUT for '$description': Search did not complete in ${max_wait}s"
       echo "{\"error\": \"timeout\", \"description\": \"$description\", \"message\": \"Search timed out after ${max_wait} seconds. For large environments, this search may need more time. Consider running manually: $search_query\", \"search_id\": \"$sid\"}" > "$output_file"
       ((STATS_ERRORS++))
@@ -3734,21 +4092,27 @@ collect_usage_analytics() {
   ((task_num++))
   info "Collecting dashboard view statistics..."
 
-  # Most viewed dashboards
+  # Build app filter string for use in searches (empty if not in scoped mode)
+  local app_search_filter=""
+  if [ -n "$app_filter" ]; then
+    app_search_filter="$app_filter "
+  fi
+
+  # Most viewed dashboards (filtered to selected apps in scoped mode)
   run_usage_search \
-    'search index=_audit action=search info=granted search_type=dashboard | stats count as view_count, dc(user) as unique_users, latest(_time) as last_viewed by app, dashboard | sort - view_count | head 100' \
+    "search index=_audit action=search info=granted search_type=dashboard ${app_search_filter}| stats count as view_count, dc(user) as unique_users, latest(_time) as last_viewed by app, dashboard | sort - view_count | head 100" \
     "$EXPORT_DIR/dynabridge_analytics/usage_analytics/dashboard_views_top100.json" \
     "Top 100 most viewed dashboards"
 
   # Dashboard views by day (trend)
   run_usage_search \
-    'search index=_audit action=search info=granted search_type=dashboard | timechart span=1d count as views by dashboard limit=20' \
+    "search index=_audit action=search info=granted search_type=dashboard ${app_search_filter}| timechart span=1d count as views by dashboard limit=20" \
     "$EXPORT_DIR/dynabridge_analytics/usage_analytics/dashboard_views_trend.json" \
     "Dashboard view trends"
 
   # Dashboards with ZERO views (candidates for elimination)
   run_usage_search \
-    'search index=_audit action=search info=granted search_type=dashboard | stats count by dashboard | append [| rest /servicesNS/-/-/data/ui/views | table title | rename title as dashboard | eval count=0] | stats sum(count) as total_views by dashboard | where total_views=0 | table dashboard' \
+    "search index=_audit action=search info=granted search_type=dashboard ${app_search_filter}| stats count by dashboard | append [| rest /servicesNS/-/-/data/ui/views | table title | rename title as dashboard | eval count=0] | stats sum(count) as total_views by dashboard | where total_views=0 | table dashboard" \
     "$EXPORT_DIR/dynabridge_analytics/usage_analytics/dashboards_never_viewed.json" \
     "Dashboards with zero views"
 
@@ -3761,27 +4125,27 @@ collect_usage_analytics() {
   ((task_num++))
   info "Collecting user activity metrics..."
 
-  # Most active users
+  # Most active users (filtered to selected apps in scoped mode)
   run_usage_search \
-    'search index=_audit action=search info=granted | stats count as search_count, dc(search) as unique_searches, latest(_time) as last_active by user | sort - search_count | head 50' \
+    "search index=_audit action=search info=granted ${app_search_filter}| stats count as search_count, dc(search) as unique_searches, latest(_time) as last_active by user | sort - search_count | head 50" \
     "$EXPORT_DIR/dynabridge_analytics/usage_analytics/users_most_active.json" \
     "Most active users"
 
   # User activity by role
   run_usage_search \
-    'search index=_audit action=search info=granted | stats count as searches, dc(user) as users by roles | sort - searches' \
+    "search index=_audit action=search info=granted ${app_search_filter}| stats count as searches, dc(user) as users by roles | sort - searches" \
     "$EXPORT_DIR/dynabridge_analytics/usage_analytics/activity_by_role.json" \
     "Activity by role"
 
   # Inactive users (no activity in period)
   run_usage_search \
-    'search index=_audit action=search info=granted | stats latest(_time) as last_active by user | where last_active < relative_time(now(), "-30d") | table user, last_active' \
+    "search index=_audit action=search info=granted ${app_search_filter}| stats latest(_time) as last_active by user | where last_active < relative_time(now(), \"-30d\") | table user, last_active" \
     "$EXPORT_DIR/dynabridge_analytics/usage_analytics/users_inactive.json" \
     "Inactive users"
 
   # User sessions per day
   run_usage_search \
-    'search index=_audit action=search info=granted | timechart span=1d dc(user) as active_users' \
+    "search index=_audit action=search info=granted ${app_search_filter}| timechart span=1d dc(user) as active_users" \
     "$EXPORT_DIR/dynabridge_analytics/usage_analytics/daily_active_users.json" \
     "Daily active users"
 
@@ -3794,33 +4158,33 @@ collect_usage_analytics() {
   ((task_num++))
   info "Collecting alert execution statistics..."
 
-  # Most fired alerts
+  # Most fired alerts (filtered to selected apps in scoped mode)
   run_usage_search \
-    'search index=_internal sourcetype=scheduler status=success savedsearch_name=* | stats count as fire_count, avg(run_time) as avg_runtime, latest(_time) as last_fired by savedsearch_name, app | where fire_count > 0 | sort - fire_count | head 100' \
+    "search index=_internal sourcetype=scheduler status=success savedsearch_name=* ${app_search_filter}| stats count as fire_count, avg(run_time) as avg_runtime, latest(_time) as last_fired by savedsearch_name, app | where fire_count > 0 | sort - fire_count | head 100" \
     "$EXPORT_DIR/dynabridge_analytics/usage_analytics/alerts_most_fired.json" \
     "Most fired alerts"
 
   # Alerts that triggered actions (email, webhook, etc.)
   run_usage_search \
-    'search index=_internal sourcetype=scheduler status=success alert_actions!="" | stats count as action_count, values(alert_actions) as actions by savedsearch_name | sort - action_count | head 50' \
+    "search index=_internal sourcetype=scheduler status=success alert_actions!=\"\" ${app_search_filter}| stats count as action_count, values(alert_actions) as actions by savedsearch_name | sort - action_count | head 50" \
     "$EXPORT_DIR/dynabridge_analytics/usage_analytics/alerts_with_actions.json" \
     "Alerts with triggered actions"
 
   # Failed/skipped alerts
   run_usage_search \
-    'search index=_internal sourcetype=scheduler (status=failed OR status=skipped) | stats count as failure_count, latest(status) as last_status, latest(reason) as last_reason by savedsearch_name | sort - failure_count | head 50' \
+    "search index=_internal sourcetype=scheduler (status=failed OR status=skipped) ${app_search_filter}| stats count as failure_count, latest(status) as last_status, latest(reason) as last_reason by savedsearch_name | sort - failure_count | head 50" \
     "$EXPORT_DIR/dynabridge_analytics/usage_analytics/alerts_failed.json" \
     "Failed/skipped alerts"
 
   # Alerts that NEVER fired (candidates for elimination)
   run_usage_search \
-    'search index=_internal sourcetype=scheduler | stats count by savedsearch_name | append [| rest /servicesNS/-/-/saved/searches search="alert.track=1" | table title | rename title as savedsearch_name | eval count=0] | stats sum(count) as total_fires by savedsearch_name | where total_fires=0 | table savedsearch_name' \
+    "search index=_internal sourcetype=scheduler ${app_search_filter}| stats count by savedsearch_name | append [| rest /servicesNS/-/-/saved/searches search=\"alert.track=1\" | table title | rename title as savedsearch_name | eval count=0] | stats sum(count) as total_fires by savedsearch_name | where total_fires=0 | table savedsearch_name" \
     "$EXPORT_DIR/dynabridge_analytics/usage_analytics/alerts_never_fired.json" \
     "Alerts that never fired"
 
   # Alert firing trend
   run_usage_search \
-    'search index=_internal sourcetype=scheduler status=success | timechart span=1d count as alert_fires by savedsearch_name limit=20' \
+    "search index=_internal sourcetype=scheduler status=success ${app_search_filter}| timechart span=1d count as alert_fires by savedsearch_name limit=20" \
     "$EXPORT_DIR/dynabridge_analytics/usage_analytics/alert_firing_trend.json" \
     "Alert firing trend"
 
@@ -3833,27 +4197,27 @@ collect_usage_analytics() {
   ((task_num++))
   info "Collecting search usage patterns..."
 
-  # Most common search commands
+  # Most common search commands (filtered to selected apps in scoped mode)
   run_usage_search \
-    'search index=_audit action=search info=granted search=* | rex field=search "^\s*\|?\s*(?<first_command>\w+)" | stats count by first_command | sort - count | head 30' \
+    "search index=_audit action=search info=granted search=* ${app_search_filter}| rex field=search \"^\\s*\\|?\\s*(?<first_command>\\w+)\" | stats count by first_command | sort - count | head 30" \
     "$EXPORT_DIR/dynabridge_analytics/usage_analytics/search_commands_popular.json" \
     "Most popular search commands"
 
   # Searches by type (adhoc vs scheduled vs dashboard)
   run_usage_search \
-    'search index=_audit action=search info=granted | stats count by search_type | sort - count' \
+    "search index=_audit action=search info=granted ${app_search_filter}| stats count by search_type | sort - count" \
     "$EXPORT_DIR/dynabridge_analytics/usage_analytics/search_by_type.json" \
     "Searches by type"
 
   # Long-running searches (performance concerns)
   run_usage_search \
-    'search index=_audit action=search info=completed | where total_run_time > 60 | stats count as slow_runs, avg(total_run_time) as avg_time, max(total_run_time) as max_time by search_id, user | sort - avg_time | head 50' \
+    "search index=_audit action=search info=completed ${app_search_filter}| where total_run_time > 60 | stats count as slow_runs, avg(total_run_time) as avg_time, max(total_run_time) as max_time by search_id, user | sort - avg_time | head 50" \
     "$EXPORT_DIR/dynabridge_analytics/usage_analytics/searches_slow.json" \
     "Slow running searches"
 
   # Most common search terms (for understanding what users look for)
   run_usage_search \
-    'search index=_audit action=search info=granted search=* | rex field=search "index=(?<searched_index>\w+)" | stats count by searched_index | sort - count | head 20' \
+    "search index=_audit action=search info=granted search=* ${app_search_filter}| rex field=search \"index=(?<searched_index>\\w+)\" | stats count by searched_index | sort - count | head 20" \
     "$EXPORT_DIR/dynabridge_analytics/usage_analytics/indexes_searched.json" \
     "Most searched indexes"
 
@@ -4480,10 +4844,10 @@ collect_audit_sample() {
 generate_summary() {
   progress "Generating environment summary..."
 
-  local summary_file="$EXPORT_DIR/dynasplunk-env-summary.md"
+  local summary_file="$EXPORT_DIR/dynabridge-env-summary.md"
 
   cat > "$summary_file" << EOF
-# DynaSplunk Environment Summary
+# DynaBridge Environment Summary
 
 **Export Date**: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
 **Hostname**: $(get_hostname)
@@ -4559,7 +4923,7 @@ EOF
 *Generated by DynaBridge Splunk Export Tool v$SCRIPT_VERSION*
 EOF
 
-  success "Summary generated: dynasplunk-env-summary.md"
+  success "Summary generated: dynabridge-env-summary.md"
 }
 
 # =============================================================================
@@ -4634,13 +4998,22 @@ generate_manifest() {
     done
   done
 
-  # Count Dashboard Studio dashboards separately (use ls instead of find for container compatibility)
+  # Count dashboards from app-scoped folders (v2 structure)
   # NOTE: Only count .json files that are NOT _definition.json (those are extracted definitions, not separate dashboards)
   local studio_count=0
-  if [ -d "$EXPORT_DIR/dashboards_studio" ]; then
-    # Count json files in dashboards_studio folder, excluding _definition.json files
-    studio_count=$(ls -1 "$EXPORT_DIR/dashboards_studio/"*.json 2>/dev/null | grep -v '_definition\.json$' | wc -l | tr -d ' ')
-  fi
+  local classic_count=0
+  for dir in "$EXPORT_DIR"/*/dashboards/studio 2>/dev/null; do
+    if [ -d "$dir" ]; then
+      local count=$(ls -1 "$dir"/*.json 2>/dev/null | grep -v '_definition\.json$' | wc -l | tr -d ' ')
+      studio_count=$((studio_count + count))
+    fi
+  done
+  for dir in "$EXPORT_DIR"/*/dashboards/classic 2>/dev/null; do
+    if [ -d "$dir" ]; then
+      local count=$(ls -1 "$dir"/*.json 2>/dev/null | wc -l | tr -d ' ')
+      classic_count=$((classic_count + count))
+    fi
+  done
 
   # Use REST API count if available, otherwise fall back to XML file count
   local dashboard_total=$STATS_DASHBOARDS
@@ -4678,11 +5051,18 @@ generate_manifest() {
   # Generate manifest
   cat > "$manifest_file" << MANIFEST_EOF
 {
-  "schema_version": "3.4",
+  "schema_version": "4.0",
+  "archive_structure_version": "v2",
   "export_tool": "dynabridge-splunk-export",
   "export_tool_version": "$SCRIPT_VERSION",
   "export_timestamp": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
   "export_duration_seconds": $export_duration,
+
+  "archive_structure": {
+    "version": "v2",
+    "description": "App-centric dashboard organization prevents name collisions",
+    "dashboard_location": "{AppName}/dashboards/classic/ and {AppName}/dashboards/studio/"
+  },
 
   "source": {
     "hostname": "$(get_hostname short)",
@@ -4994,6 +5374,12 @@ generate_python_anonymizer() {
 """
 DynaBridge Anonymizer - Streaming file anonymization
 Handles large files without memory issues or regex backtracking
+
+v2.0 - Fixed JSON corruption issues:
+- Removed overly aggressive public IP pattern that matched version numbers
+- Improved JSON escape fixing to handle all invalid escape sequences
+- Added JSON validation before saving to prevent corrupt output
+- Use surrogateescape encoding to preserve bytes that can't decode as UTF-8
 """
 import sys
 import re
@@ -5021,7 +5407,9 @@ def anonymize_email(email):
     # Skip already anonymized or safe emails
     if '@anon.dynabridge.local' in email or '@example.com' in email or '@localhost' in email:
         return email
-    anon = f"user{get_hash_id(email)}@anon.dynabridge.local"
+    # Use 'anon' prefix instead of 'user' to avoid creating \u sequences
+    # (e.g., \user becomes invalid JSON unicode escape)
+    anon = f"anon{get_hash_id(email)}@anon.dynabridge.local"
     email_map[email] = anon
     return anon
 
@@ -5090,15 +5478,16 @@ def process_line(line):
         if anon != match:
             result = result.replace(match, anon)
 
-    # 2. Redact private IP addresses (keep localhost)
+    # 2. Redact private IP addresses ONLY (RFC 1918)
+    # These patterns are safe - they only match private ranges
     # 10.x.x.x
     result = re.sub(r'\b10\.\d{1,3}\.\d{1,3}\.\d{1,3}\b', '[IP-REDACTED]', result)
     # 172.16-31.x.x
-    result = re.sub(r'\b172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}\b', '[IP-REDACTED]', result)
+    result = re.sub(r'\b172\.(1[6-9]|2[0-9]|3[01])\.\d{1,3}\.\d{1,3}\b', '[IP-REDACTED]', result)
     # 192.168.x.x
     result = re.sub(r'\b192\.168\.\d{1,3}\.\d{1,3}\b', '[IP-REDACTED]', result)
-    # Public IPs (excluding 127.x and 0.x)
-    result = re.sub(r'\b([1-9]|[1-9]\d|1\d{2}|2[0-4]\d|25[0-5])\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\b', '[IP-REDACTED]', result)
+    # NOTE: Removed the overly broad public IP pattern that was matching version numbers
+    # and other legitimate dot-separated values like "1.2.3.4" in SPL queries
 
     # 3. Anonymize hostnames in JSON format: "host": "value"
     host_json_pattern = r'"(host|hostname|splunk_server|server|serverName)"\s*:\s*"([^"]+)"'
@@ -5119,11 +5508,6 @@ def process_line(line):
             result = result.replace(f'{key} = {hostname}', f'{key} = {anon}')
 
     # 5. Anonymize webhook URLs
-    webhook_pattern = r'https?://[a-zA-Z0-9.-]+\.(slack\.com|pagerduty\.com|opsgenie\.com|webhook\.office\.com|hooks\.zapier\.com)[^\s"\']*'
-    for match in re.findall(webhook_pattern, result):
-        # match is just the domain part, need to re-extract full URL
-        pass
-    # Simpler approach - match full webhook URLs
     webhook_full_pattern = r'https?://[^\s"\'<>]+(?:slack\.com|pagerduty\.com|opsgenie\.com|webhook\.office\.com|hooks\.zapier\.com)[^\s"\'<>]*'
     for match in re.findall(webhook_full_pattern, result):
         anon = anonymize_webhook(match)
@@ -5160,14 +5544,60 @@ def process_line(line):
 
     return result
 
-def process_file(filepath):
-    """Process a file line by line (streaming, memory efficient)"""
-    try:
-        # Read file
-        with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
-            lines = f.readlines()
+def fix_json_escapes(content):
+    """Fix invalid JSON escape sequences created during anonymization.
 
-        # Process each line
+    When anonymized values replace original data that had preceding backslashes,
+    we can get invalid escape sequences. For example:
+    - \\user... becomes \\u followed by non-hex (invalid unicode escape)
+    - \\anon... becomes \\a followed by non-standard escape
+
+    This function fixes these by properly escaping the backslash.
+    """
+    # Fix all invalid escape sequences in JSON strings
+    # Valid JSON escapes are: \", \\, \/, \b, \f, \n, \r, \t, \uXXXX
+    # Anything else after a backslash needs the backslash escaped
+
+    # Fix \\u followed by non-hex or incomplete hex (invalid unicode escape)
+    result = re.sub(r'\\u([^0-9a-fA-F])', r'\\\\u\\1', content)
+    result = re.sub(r'\\u([0-9a-fA-F]{1,3})([^0-9a-fA-F])', r'\\\\u\\1\\2', result)
+
+    # Fix \\a (invalid escape - \a is not valid JSON)
+    result = re.sub(r'\\a([^n])', r'\\\\a\\1', result)  # but preserve \an if followed by more
+
+    # Fix \\h (invalid escape - appears from \host patterns)
+    result = re.sub(r'\\h', r'\\\\h', result)
+
+    # Fix other common invalid escapes that might appear
+    result = re.sub(r'\\([^"\\/bfnrtu])', r'\\\\\\1', result)
+
+    return result
+
+def validate_json(content):
+    """Check if content is valid JSON. Returns True if valid, False otherwise."""
+    try:
+        json.loads(content)
+        return True
+    except json.JSONDecodeError:
+        return False
+
+def process_file(filepath):
+    """Process a file, applying anonymization rules while preserving file integrity"""
+    try:
+        # Read with surrogateescape to preserve bytes that can't decode as UTF-8
+        # This prevents data corruption from invalid byte sequences
+        with open(filepath, 'r', encoding='utf-8', errors='surrogateescape') as f:
+            content = f.read()
+
+        is_json = filepath.lower().endswith('.json')
+
+        # For JSON files, validate it's parseable before modifying
+        original_valid = True
+        if is_json:
+            original_valid = validate_json(content)
+
+        # Process line by line
+        lines = content.split('\n')
         modified = False
         new_lines = []
         for line in lines:
@@ -5176,12 +5606,25 @@ def process_file(filepath):
             if new_line != line:
                 modified = True
 
-        # Write back if modified
-        if modified:
-            with open(filepath, 'w', encoding='utf-8') as f:
-                f.writelines(new_lines)
-            return True
-        return False
+        if not modified:
+            return False
+
+        new_content = '\n'.join(new_lines)
+
+        # For JSON files, apply escape fixes and validate
+        if is_json:
+            new_content = fix_json_escapes(new_content)
+
+            # Only save if the result is valid JSON (or original was also invalid)
+            if original_valid and not validate_json(new_content):
+                print(f"WARNING: Anonymization would corrupt JSON in {filepath}, skipping", file=sys.stderr)
+                return False
+
+        # Write back with same encoding handling
+        with open(filepath, 'w', encoding='utf-8', errors='surrogateescape') as f:
+            f.write(new_content)
+
+        return True
     except Exception as e:
         print(f"Error processing {filepath}: {e}", file=sys.stderr)
         return False
@@ -5428,6 +5871,9 @@ create_archive() {
 
   # Log Phase 1 resilience statistics
   log "Resilience stats: API calls=$STATS_API_CALLS, retries=$STATS_API_RETRIES, failures=$STATS_API_FAILURES, batches=$STATS_BATCHES_COMPLETED"
+
+  # Finalize debug log if enabled (redirect to stderr so it doesn't pollute tarball path)
+  finalize_debug_log >&2
 
   echo "" >&2
   progress "Creating compressed archive..." >&2
@@ -5831,6 +6277,56 @@ main() {
         AUTO_CONFIRM=true
         shift
         ;;
+      --all-apps)
+        EXPORT_ALL_APPS=true
+        shift
+        ;;
+      --apps)
+        # Check if value is provided
+        if [ -z "$2" ] || [[ "$2" == --* ]]; then
+          echo "[ERROR] --apps requires a value (comma-separated app names)" >&2
+          exit 1
+        fi
+        # Clear array first, then populate from comma-separated list
+        SELECTED_APPS=()
+        IFS=',' read -ra _apps_temp <<< "$2"
+        for _app in "${_apps_temp[@]}"; do
+          # Trim whitespace
+          # Trim whitespace (pure bash)
+          _app="${_app#"${_app%%[![:space:]]*}"}"
+          _app="${_app%"${_app##*[![:space:]]}"}"
+          [ -n "$_app" ] && SELECTED_APPS+=("$_app")
+        done
+        EXPORT_ALL_APPS=false
+        if [ ${#SELECTED_APPS[@]} -eq 0 ]; then
+          echo "[WARNING] --apps was specified but no valid apps were parsed from '$2'" >&2
+        fi
+        shift 2
+        ;;
+      --quick)
+        # Quick mode - dramatically faster exports by skipping global analytics
+        QUICK_MODE=true
+        SCOPE_TO_APPS=true
+        shift
+        ;;
+      --scoped)
+        # Scope all collections to selected apps (auto-enabled with --apps)
+        SCOPE_TO_APPS=true
+        shift
+        ;;
+      --no-usage)
+        COLLECT_USAGE=false
+        shift
+        ;;
+      --no-rbac)
+        COLLECT_RBAC=false
+        shift
+        ;;
+      --debug|-d)
+        # Enable verbose debug logging for troubleshooting
+        DEBUG_MODE=true
+        shift
+        ;;
       --help)
         echo "Usage: $0 [OPTIONS]"
         echo ""
@@ -5840,10 +6336,30 @@ main() {
         echo "  -h, --host HOST         Splunk host (default: localhost)"
         echo "  -P, --port PORT         Splunk port (default: 8089)"
         echo "  --splunk-home PATH      Splunk installation path"
+        echo "  --apps LIST             Comma-separated list of apps to export"
+        echo "  --all-apps              Export all applications"
+        echo "  --quick                 Quick mode - TESTING ONLY (skips critical migration data)"
+        echo "  --scoped                Scope all collections to selected apps only"
+        echo "  --no-usage              Skip usage analytics collection"
+        echo "  --no-rbac               Skip RBAC/user collection"
         echo "  --anonymize             Enable data anonymization (default)"
         echo "  --no-anonymize          Disable data anonymization"
         echo "  -y, --yes               Auto-confirm all prompts"
+        echo "  -d, --debug             Enable verbose debug logging (writes to export_debug.log)"
         echo "  --help                  Show this help message"
+        echo ""
+        echo "WARNING: --quick is for TESTING/VALIDATION ONLY"
+        echo "  Do NOT use --quick for migration analysis. It skips:"
+        echo "    - Usage analytics (who uses what, how often)"
+        echo "    - User/RBAC data (migration audience identification)"
+        echo "    - Priority assessment data"
+        echo "  For migration analysis, use full export (default) or --scoped."
+        echo ""
+        echo "Performance Tips:"
+        echo "  For large environments, use --scoped (not --quick) with --apps:"
+        echo "    $0 -u admin -p pass --apps myapp --scoped"
+        echo ""
+        echo "  This exports app configs + app-specific users/usage for migration analysis."
         exit 0
         ;;
       *)
@@ -5867,11 +6383,37 @@ main() {
     fi
   fi
 
+  # =========================================================================
+  # DETERMINE INTERACTIVE VS NON-INTERACTIVE MODE
+  # Non-interactive requires: username AND password
+  # =========================================================================
+  if [ -n "$SPLUNK_USER" ] && [ -n "$SPLUNK_PASSWORD" ]; then
+    NON_INTERACTIVE=true
+  fi
+
   # Start overall timer
   EXPORT_START_TIME=$(date +%s)
 
   # Show welcome
   show_banner
+
+  # Show mode info in non-interactive mode
+  if [ "$NON_INTERACTIVE" = "true" ]; then
+    echo -e "  ${CYAN}Running in NON-INTERACTIVE mode${NC}"
+    echo -e "  ${DIM}User: $SPLUNK_USER${NC}"
+    if [ ${#SELECTED_APPS[@]} -gt 0 ]; then
+      echo -e "  ${DIM}Apps: ${SELECTED_APPS[*]}${NC}"
+    else
+      echo -e "  ${DIM}Apps: all (will discover from filesystem)${NC}"
+    fi
+    if [ "$QUICK_MODE" = "true" ]; then
+      echo -e "  ${DIM}Mode: QUICK (no global analytics)${NC}"
+    elif [ "$SCOPE_TO_APPS" = "true" ]; then
+      echo -e "  ${DIM}Mode: App-scoped analytics${NC}"
+    fi
+    echo ""
+  fi
+
   show_welcome
 
   # Check prerequisites
@@ -5899,6 +6441,59 @@ main() {
 
     # Phase 2: Large environment scope selection
     select_export_scope
+  fi
+
+  # Log configuration state for debugging
+  debug_config_state
+
+  # =========================================================================
+  # WARNING IF NO APP FILTER SPECIFIED
+  # =========================================================================
+  if [ "$EXPORT_ALL_APPS" = "true" ]; then
+    local app_count=${#SELECTED_APPS[@]}
+    echo ""
+    echo -e "  ${YELLOW}╔══════════════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "  ${YELLOW}║${NC}  ${BOLD}⚠ WARNING: No --apps filter specified${NC}                                ${YELLOW}║${NC}"
+    echo -e "  ${YELLOW}║${NC}                                                                        ${YELLOW}║${NC}"
+    echo -e "  ${YELLOW}║${NC}  The script will export ALL applications from this Splunk Enterprise  ${YELLOW}║${NC}"
+    echo -e "  ${YELLOW}║${NC}  environment. In large systems (1000+ dashboards), this may take      ${YELLOW}║${NC}"
+    echo -e "  ${YELLOW}║${NC}  several hours to complete.                                           ${YELLOW}║${NC}"
+    echo -e "  ${YELLOW}║${NC}                                                                        ${YELLOW}║${NC}"
+    echo -e "  ${YELLOW}║${NC}  ${DIM}To export specific apps with usage data, use:${NC}                        ${YELLOW}║${NC}"
+    echo -e "  ${YELLOW}║${NC}  ${DIM}  --apps \"app1,app2\" --scoped${NC}                                         ${YELLOW}║${NC}"
+    echo -e "  ${YELLOW}║${NC}                                                                        ${YELLOW}║${NC}"
+    echo -e "  ${YELLOW}║${NC}  ${DIM}(--quick is for testing only - skips migration-critical data)${NC}        ${YELLOW}║${NC}"
+    echo -e "  ${YELLOW}╚══════════════════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+    echo -e "  ${CYAN}Continuing with full export...${NC}"
+    echo ""
+
+    # Additional warning for very large environments
+    if [ "$app_count" -gt 50 ]; then
+      warning "Found ${app_count} apps - this is a large environment!"
+      warning "Consider using --apps to filter for faster exports"
+    fi
+  fi
+
+  # =========================================================================
+  # AUTO-ENABLE APP-SCOPED MODE FOR PERFORMANCE
+  # =========================================================================
+  if [ "$EXPORT_ALL_APPS" = "false" ] && [ "$QUICK_MODE" != "true" ]; then
+    # Specific apps were selected - auto-enable scoped mode
+    if [ "$SCOPE_TO_APPS" != "true" ]; then
+      info "App-scoped mode auto-enabled (specific apps selected)"
+      info "  → Usage analytics will be scoped to: ${SELECTED_APPS[*]}"
+      info "  → Use --all-apps to collect global analytics"
+      SCOPE_TO_APPS=true
+    fi
+  fi
+
+  # Handle quick mode - skip expensive global collections
+  if [ "$QUICK_MODE" = "true" ]; then
+    info "Quick mode enabled - skipping global analytics collections"
+    COLLECT_RBAC=false
+    COLLECT_USAGE=false
+    COLLECT_INDEXES=false
   fi
 
   # Prepare export

@@ -1,9 +1,14 @@
 # DynaBridge Splunk Enterprise Export Script - Comprehensive Specification
 
-## Version 4.0.1 | Complete Data Collection Framework
+## Version 4.2.0 | Complete Data Collection Framework
 
 **Last Updated**: January 2026
 **Related Documents**: [Script-Generated Analytics Reference](SCRIPT-GENERATED-ANALYTICS-REFERENCE.md) | [Enterprise README](README-SPLUNK-ENTERPRISE.md) | [Export Schema](EXPORT-SCHEMA.md)
+
+---
+
+> **Developed for Dynatrace One by Enterprise Solutions & Architecture**
+> *An ACE Services Division of Dynatrace*
 
 ---
 
@@ -15,6 +20,41 @@ This specification defines the complete requirements for a Splunk data collectio
 - **Ownership & RBAC**: Users, groups, roles, capabilities, object ownership
 - **Usage Analytics**: Query frequency, dashboard views, alert triggers, index volume trends
 - **Migration Prioritization**: Scoring of high-value assets worth migrating
+
+---
+
+## What's New in v4.2.0
+
+### App-Centric Dashboard Structure (v2)
+- **No more flat folders**: Dashboards are now saved to `{AppName}/dashboards/classic/` and `{AppName}/dashboards/studio/` instead of root-level `dashboards_classic/` and `dashboards_studio/`
+- **Prevents name collisions**: Multiple apps can now have dashboards with the same name without data loss
+- **Manifest Schema v4.0**: Added `archive_structure_version: "v2"` for DynaBridge to detect and process the new structure
+
+---
+
+## What Was New in v4.1.0
+
+### App-Scoped Export Mode
+- **`--apps` flag**: Export specific apps only (e.g., `--apps "search,myapp,security"`)
+- **`--quick` mode**: Skip global analytics for fastest possible export (**TESTING ONLY**)
+- **`--scoped` mode**: Scope RBAC/usage collection to selected apps only
+- **Auto-scoped**: When `--apps` is specified, collections automatically scope to those apps
+
+> **⚠️ WARNING**: `--quick` is for **testing/validation only**. It eliminates usage analytics, user data, and RBAC information critical for migration analysis. Always use full or `--scoped` export for actual migration planning.
+
+### Debug Mode
+- **`--debug` flag**: Enable verbose logging for troubleshooting
+- **Debug log file**: `export_debug.log` with detailed API/search lifecycle
+- **Color-coded console output**: ERROR (red), WARN (yellow), API (cyan), SEARCH (magenta), TIMING (blue)
+- **Sensitive data redaction**: Passwords and tokens automatically redacted in debug output
+
+### Skip Collection Options
+- **`--no-usage`**: Skip usage analytics collection
+- **`--no-rbac`**: Skip RBAC/user collection
+
+### Performance Improvements
+- **App-filtered queries**: RBAC and usage searches now filter by selected apps
+- **Reduced scope**: Quick mode can complete in minutes vs hours for large environments
 
 ---
 
@@ -374,9 +414,9 @@ GET /services/authentication/users/{username}
 
 # Collect for each user:
 {
-  "username": "jsmith",
-  "realname": "John Smith",
-  "email": "jsmith@company.com",
+  "username": "splunk_user",
+  "realname": "Sample User",
+  "email": "splunk_user@company.com",
   "roles": ["admin", "power_user"],
   "defaultApp": "search",
   "type": "Splunk",           # Splunk, LDAP, SAML, etc.
@@ -449,13 +489,13 @@ GET /servicesNS/{owner}/{app}/data/ui/views/{dashboard_name}
 {
   "dashboardName": "security_overview",
   "app": "security_app",
-  "owner": "jsmith",
+  "owner": "splunk_user",
   "sharing": "app",              # user, app, global
   "permissions": {
     "read": ["*"],
     "write": ["admin", "power_user"]
   },
-  "lastModifiedBy": "jsmith",
+  "lastModifiedBy": "splunk_user",
   "lastModifiedTime": "2024-01-10T14:30:00Z"
 }
 ```
@@ -532,7 +572,7 @@ GET /servicesNS/{owner}/{app}/saved/searches/{search_name}
       "dashboards": {
         "total": 245,
         "byOwner": [
-          {"owner": "jsmith", "count": 45},
+          {"owner": "splunk_user", "count": 45},
           {"owner": "security_team", "count": 32},
           ...
         ],
@@ -651,7 +691,7 @@ GET /services/search/jobs
         "views": 2345,
         "uniqueViewers": 45,
         "avgSessionDuration": 180,
-        "owner": "jsmith",
+        "owner": "splunk_user",
         "lastViewed": "2024-01-15T09:30:00Z"
       },
       ...
@@ -848,7 +888,7 @@ index=_audit action=login OR action=search
     "period": "last_30_days",
     "users": [
       {
-        "username": "jsmith",
+        "username": "splunk_user",
         "totalActions": 12345,
         "searchCount": 5678,
         "loginCount": 45,
@@ -878,7 +918,7 @@ index=_audit action=login OR action=search
 splunk_export_[env_name]_[timestamp]/
 │
 ├── manifest.json                       # 📋 STANDARDIZED METADATA (v3.5.0)
-├── dynasplunk-env-summary.md           # 📊 MASTER SUMMARY FILE
+├── dynabridge-env-summary.md           # 📊 MASTER SUMMARY FILE
 ├── _metadata.json                      # Export metadata
 ├── _environment_profile.json           # Detected environment profile
 │
@@ -927,7 +967,12 @@ splunk_export_[env_name]_[timestamp]/
 │       ├── server.conf
 │       └── web.conf
 │
-├── [app_name]/                         # Per-app exports
+├── [app_name]/                         # Per-app exports (v2 app-centric structure)
+│   ├── dashboards/                     # v2: App-scoped dashboards (v4.2.0+)
+│   │   ├── classic/                    # Classic XML dashboards for this app
+│   │   │   └── *.xml
+│   │   └── studio/                     # Dashboard Studio JSON for this app
+│   │       └── *.json
 │   ├── default/
 │   │   ├── props.conf
 │   │   ├── transforms.conf
@@ -937,7 +982,7 @@ splunk_export_[env_name]_[timestamp]/
 │   │   ├── tags.conf
 │   │   └── data/
 │   │       └── ui/
-│   │           ├── views/              # Classic dashboards (XML)
+│   │           ├── views/              # Legacy location (v1 archives only)
 │   │           ├── panels/             # Prebuilt panels
 │   │           └── nav/                # Navigation
 │   ├── local/
@@ -945,24 +990,24 @@ splunk_export_[env_name]_[timestamp]/
 │   └── lookups/
 │       └── *.csv
 │
-├── dashboard_studio/                   # Dashboard Studio (JSON)
-│   ├── dashboards_list.json
-│   └── [dashboard_name].json
-│
 └── _audit_sample/                      # Sample audit data (optional)
     └── audit_sample.log                # Last 10000 audit entries
 ```
 
-### 6.2 manifest.json Schema (v4.0.0)
+### 6.2 manifest.json Schema (v4.2.0)
 
 The script generates a standardized `manifest.json` with guaranteed schema for DynaBridge:
 
 ```json
 {
-  "schemaVersion": "4.0.0",
+  "schemaVersion": "4.0",
   "exportType": "splunk_enterprise",
   "exportTimestamp": "2025-12-03T10:30:00Z",
-  "scriptVersion": "4.0.0",
+  "scriptVersion": "4.2.0",
+  "archive_structure": {
+    "version": "v2",
+    "dashboard_organization": "app_scoped"
+  },
 
   "environment": {
     "hostname": "splunk-sh-01.company.com",
@@ -1005,7 +1050,7 @@ The script generates a standardized `manifest.json` with guaranteed schema for D
 }
 ```
 
-### 6.3 Master Summary File: dynasplunk-env-summary.md
+### 6.3 Master Summary File: dynabridge-env-summary.md
 
 ```markdown
 # DynaSplunk Environment Summary
@@ -1013,7 +1058,7 @@ The script generates a standardized `manifest.json` with guaranteed schema for D
 **Export Date**: 2025-12-03T10:30:00Z
 **Splunk Version**: 9.1.2
 **Environment ID**: PROD-SH-CLUSTER-01
-**Export Tool Version**: 4.0.0
+**Export Tool Version**: 4.1.0
 
 ---
 
@@ -1071,7 +1116,7 @@ The script generates a standardized `manifest.json` with guaranteed schema for D
 | Owner | Dashboards | Alerts | Saved Searches |
 |-------|------------|--------|----------------|
 | security_team | 32 | 45 | 89 |
-| jsmith | 28 | 12 | 34 |
+| splunk_user | 28 | 12 | 34 |
 | ops_team | 24 | 38 | 67 |
 | network_admin | 18 | 22 | 45 |
 | mwilson | 15 | 8 | 23 |
@@ -1594,7 +1639,7 @@ The script should feel like a guided conversation with an expert, not a terse co
 │ STEP 6: SUMMARY GENERATION                                          │
 │                                                                      │
 │ Calculating migration priority scores...                             │
-│ Generating dynasplunk-env-summary.md...                             │
+│ Generating dynabridge-env-summary.md...                             │
 │                                                                      │
 │ Summary Preview:                                                     │
 │ ┌────────────────────────────────────────────────────────┐          │
@@ -1637,7 +1682,7 @@ The script should feel like a guided conversation with an expert, not a terse co
 │ 2. Open DynaBridge in Dynatrace                                     │
 │ 3. Upload the .tar.gz file                                          │
 │                                                                      │
-│ The dynasplunk-env-summary.md file contains:                        │
+│ The dynabridge-env-summary.md file contains:                        │
 │ • Environment overview                                              │
 │ • User and access summary                                           │
 │ • Usage analytics for last 30 days                                  │
