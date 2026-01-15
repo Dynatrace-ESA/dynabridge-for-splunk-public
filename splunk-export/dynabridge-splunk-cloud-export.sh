@@ -98,7 +98,7 @@ set -o pipefail  # Fail on pipe errors
 # SCRIPT CONFIGURATION
 # =============================================================================
 
-SCRIPT_VERSION="4.2.1"
+SCRIPT_VERSION="4.2.2"
 SCRIPT_NAME="DynaBridge Splunk Cloud Export"
 
 # ANSI color codes
@@ -991,7 +991,8 @@ api_call() {
   local retries=0
   local response=""
   local http_code=""
-  local start_time=$(date +%s%3N 2>/dev/null || date +%s)
+  # Use seconds only - %N (nanoseconds) not supported on macOS
+  local start_time=$(date +%s)
 
   ((STATS_API_CALLS++))
   debug_log "API" "→ $method $endpoint"
@@ -1051,7 +1052,7 @@ api_call() {
     response=$(cat "$tmp_file")
     rm -f "$tmp_file"
 
-    local end_time=$(date +%s%3N 2>/dev/null || date +%s)
+    local end_time=$(date +%s)
     local duration=$((end_time - start_time))
     local response_size=${#response}
     debug_api_call "$method" "$endpoint" "$http_code" "$response_size" "$duration"
