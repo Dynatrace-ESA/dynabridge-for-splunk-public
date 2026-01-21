@@ -1348,22 +1348,175 @@ show_export_timing_stats() {
 test_connectivity() {
   local url="$1"
   local response
+  local curl_exit_code
+  local curl_output
+  local test_url="${url}/services/server/info"
+  local hostname=$(echo "$url" | sed 's|https://||' | sed 's|:.*||')
 
-  # Try to reach the server (no auth needed for basic check)
-  # Note: --max-time covers entire request including TLS handshake (not just TCP connect)
-  response=$(curl -s -k -o /dev/null -w "%{http_code}" \
-    --connect-timeout 10 \
-    --max-time 30 \
-    "$url/services/server/info")
+  echo ""
+  echo -e "${CYAN}╔══════════════════════════════════════════════════════════════════════════╗${NC}"
+  echo -e "${CYAN}║${NC}  ${BOLD}CONNECTIVITY TEST - VERBOSE DIAGNOSTICS${NC}                                  ${CYAN}║${NC}"
+  echo -e "${CYAN}╠══════════════════════════════════════════════════════════════════════════╣${NC}"
+  echo -e "${CYAN}║${NC}  Target URL: ${WHITE}${test_url}${NC}"
+  echo -e "${CYAN}║${NC}  Hostname:   ${WHITE}${hostname}${NC}"
+  echo -e "${CYAN}║${NC}  Port:       ${WHITE}8089${NC}"
+  echo -e "${CYAN}╚══════════════════════════════════════════════════════════════════════════╝${NC}"
+  echo ""
+
+  # =========================================================================
+  # STEP 1: DNS Resolution Test
+  # =========================================================================
+  echo -e "${YELLOW}[STEP 1/3] Testing DNS Resolution...${NC}"
+  local dns_result
+  dns_result=$(nslookup "$hostname" 2>&1) || dns_result=$(host "$hostname" 2>&1) || dns_result=$(dig +short "$hostname" 2>&1)
+  local dns_ip=$(echo "$dns_result" | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -1)
+
+  if [ -n "$dns_ip" ]; then
+    echo -e "  ${GREEN}✓ DNS resolved: ${hostname} → ${dns_ip}${NC}"
+  else
+    echo -e "  ${RED}✗ DNS FAILED: Cannot resolve ${hostname}${NC}"
+    echo -e "  ${DIM}DNS output:${NC}"
+    echo "$dns_result" | sed 's/^/    /'
+    echo ""
+    error "DNS resolution failed for $hostname"
+    return 1
+  fi
+  echo ""
+
+  # =========================================================================
+  # STEP 2: TCP Port Connectivity Test
+  # =========================================================================
+  echo -e "${YELLOW}[STEP 2/3] Testing TCP Connection to Port 8089...${NC}"
+  local nc_result
+  if command -v nc &> /dev/null; then
+    nc_result=$(nc -zv -w 10 "$hostname" 8089 2>&1)
+    local nc_exit=$?
+    if [ $nc_exit -eq 0 ]; then
+      echo -e "  ${GREEN}✓ TCP port 8089 is OPEN${NC}"
+    else
+      echo -e "  ${RED}✗ TCP port 8089 is BLOCKED or UNREACHABLE${NC}"
+      echo -e "  ${DIM}nc output:${NC}"
+      echo "$nc_result" | sed 's/^/    /'
+      echo ""
+      echo -e "  ${YELLOW}This usually means:${NC}"
+      echo -e "  ${DIM}  • Corporate firewall blocking outbound port 8089${NC}"
+      echo -e "  ${DIM}  • VPN blocking non-standard ports${NC}"
+      echo -e "  ${DIM}  • Network security policy${NC}"
+      echo ""
+    fi
+  else
+    echo -e "  ${DIM}(nc not available, skipping TCP test)${NC}"
+  fi
+  echo ""
+
+  # =========================================================================
+  # STEP 3: Full HTTPS Connection with Verbose Curl
+  # =========================================================================
+  echo -e "${YELLOW}[STEP 3/3] Testing HTTPS Connection (verbose)...${NC}"
+  echo -e "${DIM}Running: curl -v -k --connect-timeout 15 --max-time 60 \"$test_url\"${NC}"
+  echo ""
+  echo -e "${CYAN}┌─────────────────────────────────────────────────────────────────────────────┐${NC}"
+  echo -e "${CYAN}│ CURL VERBOSE OUTPUT                                                         │${NC}"
+  echo -e "${CYAN}├─────────────────────────────────────────────────────────────────────────────┤${NC}"
+
+  # Run curl with full verbose output
+  curl_output=$(curl -v -k -o /dev/null -w "\n\nHTTP_CODE:%{http_code}\nTIME_TOTAL:%{time_total}\nTIME_CONNECT:%{time_connect}\nTIME_APPCONNECT:%{time_appconnect}\nTIME_NAMELOOKUP:%{time_namelookup}" \
+    --connect-timeout 15 \
+    --max-time 60 \
+    "$test_url" 2>&1)
+  curl_exit_code=$?
+
+  # Display verbose output
+  echo "$curl_output" | while IFS= read -r line; do
+    echo -e "${CYAN}│${NC} ${DIM}${line}${NC}"
+  done
+
+  echo -e "${CYAN}└─────────────────────────────────────────────────────────────────────────────┘${NC}"
+  echo ""
+
+  # Extract metrics
+  response=$(echo "$curl_output" | grep "HTTP_CODE:" | cut -d: -f2)
+  local time_total=$(echo "$curl_output" | grep "TIME_TOTAL:" | cut -d: -f2)
+  local time_connect=$(echo "$curl_output" | grep "TIME_CONNECT:" | cut -d: -f2)
+  local time_appconnect=$(echo "$curl_output" | grep "TIME_APPCONNECT:" | cut -d: -f2)
+  local time_dns=$(echo "$curl_output" | grep "TIME_NAMELOOKUP:" | cut -d: -f2)
+  [ -z "$response" ] && response="000"
+
+  # =========================================================================
+  # RESULTS SUMMARY
+  # =========================================================================
+  echo -e "${CYAN}╔══════════════════════════════════════════════════════════════════════════╗${NC}"
+  echo -e "${CYAN}║${NC}  ${BOLD}CONNECTION TEST RESULTS${NC}                                                  ${CYAN}║${NC}"
+  echo -e "${CYAN}╠══════════════════════════════════════════════════════════════════════════╣${NC}"
+  echo -e "${CYAN}║${NC}  Curl Exit Code:    ${WHITE}${curl_exit_code}${NC}"
+  echo -e "${CYAN}║${NC}  HTTP Response:     ${WHITE}${response}${NC}"
+  echo -e "${CYAN}║${NC}  DNS Lookup Time:   ${WHITE}${time_dns:-N/A}s${NC}"
+  echo -e "${CYAN}║${NC}  TCP Connect Time:  ${WHITE}${time_connect:-N/A}s${NC}"
+  echo -e "${CYAN}║${NC}  TLS Handshake:     ${WHITE}${time_appconnect:-N/A}s${NC}"
+  echo -e "${CYAN}║${NC}  Total Time:        ${WHITE}${time_total:-N/A}s${NC}"
+  echo -e "${CYAN}╚══════════════════════════════════════════════════════════════════════════╝${NC}"
+  echo ""
+
+  # Interpret curl exit codes
+  if [ "$curl_exit_code" -ne 0 ]; then
+    echo -e "${RED}╔══════════════════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${RED}║${NC}  ${BOLD}${RED}ERROR DIAGNOSIS${NC}                                                          ${RED}║${NC}"
+    echo -e "${RED}╠══════════════════════════════════════════════════════════════════════════╣${NC}"
+    case "$curl_exit_code" in
+      6)
+        echo -e "${RED}║${NC}  ${YELLOW}Exit Code 6: COULD NOT RESOLVE HOST${NC}"
+        echo -e "${RED}║${NC}  ${DIM}The hostname '${hostname}' could not be resolved via DNS.${NC}"
+        echo -e "${RED}║${NC}  ${DIM}→ Check if the hostname is spelled correctly${NC}"
+        echo -e "${RED}║${NC}  ${DIM}→ Try: nslookup ${hostname}${NC}"
+        ;;
+      7)
+        echo -e "${RED}║${NC}  ${YELLOW}Exit Code 7: FAILED TO CONNECT${NC}"
+        echo -e "${RED}║${NC}  ${DIM}TCP connection to ${hostname}:8089 failed.${NC}"
+        echo -e "${RED}║${NC}  ${DIM}→ Port 8089 is likely BLOCKED by firewall${NC}"
+        echo -e "${RED}║${NC}  ${DIM}→ Try from a different network (home, cloud VM)${NC}"
+        echo -e "${RED}║${NC}  ${DIM}→ Contact IT to allow outbound port 8089${NC}"
+        ;;
+      28)
+        echo -e "${RED}║${NC}  ${YELLOW}Exit Code 28: OPERATION TIMED OUT${NC}"
+        echo -e "${RED}║${NC}  ${DIM}The request did not complete within 60 seconds.${NC}"
+        echo -e "${RED}║${NC}  ${DIM}→ Network may be very slow or partially blocked${NC}"
+        echo -e "${RED}║${NC}  ${DIM}→ TLS handshake may be hanging${NC}"
+        echo -e "${RED}║${NC}  ${DIM}→ Try from a different network${NC}"
+        ;;
+      35)
+        echo -e "${RED}║${NC}  ${YELLOW}Exit Code 35: SSL/TLS HANDSHAKE FAILED${NC}"
+        echo -e "${RED}║${NC}  ${DIM}TLS negotiation failed with the server.${NC}"
+        echo -e "${RED}║${NC}  ${DIM}→ Could be TLS version mismatch${NC}"
+        echo -e "${RED}║${NC}  ${DIM}→ Try: curl --tlsv1.2 -vk \"$test_url\"${NC}"
+        ;;
+      52)
+        echo -e "${RED}║${NC}  ${YELLOW}Exit Code 52: SERVER RETURNED NOTHING${NC}"
+        echo -e "${RED}║${NC}  ${DIM}Server closed connection without sending data.${NC}"
+        echo -e "${RED}║${NC}  ${DIM}→ Server may be blocking your IP${NC}"
+        echo -e "${RED}║${NC}  ${DIM}→ Try from a different network${NC}"
+        ;;
+      56)
+        echo -e "${RED}║${NC}  ${YELLOW}Exit Code 56: NETWORK DATA RECEIVE FAILURE${NC}"
+        echo -e "${RED}║${NC}  ${DIM}Connection established but data transfer failed.${NC}"
+        echo -e "${RED}║${NC}  ${DIM}→ Network instability${NC}"
+        echo -e "${RED}║${NC}  ${DIM}→ Connection may be getting reset by firewall${NC}"
+        ;;
+      *)
+        echo -e "${RED}║${NC}  ${YELLOW}Exit Code ${curl_exit_code}: CURL ERROR${NC}"
+        echo -e "${RED}║${NC}  ${DIM}See: https://curl.se/libcurl/c/libcurl-errors.html${NC}"
+        ;;
+    esac
+    echo -e "${RED}╚══════════════════════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+  fi
 
   case "$response" in
     000)
-      error "Cannot connect to $url. Check network/firewall settings."
+      error "Cannot connect to Splunk Cloud instance"
       return 1
       ;;
     401|200)
-      # 401 means reachable but needs auth, 200 means anonymous access
-      success "Splunk Cloud instance is reachable"
+      success "Splunk Cloud instance is reachable (HTTP $response)"
       return 0
       ;;
     *)
