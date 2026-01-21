@@ -1350,8 +1350,10 @@ test_connectivity() {
   local response
 
   # Try to reach the server (no auth needed for basic check)
+  # Note: --max-time covers entire request including TLS handshake (not just TCP connect)
   response=$(curl -s -k -o /dev/null -w "%{http_code}" \
     --connect-timeout 10 \
+    --max-time 30 \
     "$url/services/server/info")
 
   case "$response" in
