@@ -9,7 +9,7 @@ fi
 
 ################################################################################
 #
-#  DynaBridge Splunk Cloud Export Script v4.2.0
+#  DynaBridge Splunk Cloud Export Script v4.2.1
 #
 #  REST API-Only Data Collection for Splunk Cloud Migration to Dynatrace
 #
@@ -2545,43 +2545,72 @@ collect_alerts() {
   progress "Collecting alerts and saved searches..."
 
   local alert_count=0
+  local total_saved_searches=0
 
   for app in "${SELECTED_APPS[@]}"; do
     local response
     response=$(api_call "/servicesNS/-/$app/saved/searches" "GET" "output_mode=json&count=0")
 
     if [ $? -eq 0 ]; then
-      echo "$response" > "$EXPORT_DIR/$app/savedsearches.json"
-
-      # Count alerts using SAME LOGIC as TypeScript parser (SINGLE SOURCE OF TRUTH)
-      # An entry is an alert if ANY of these are true:
-      # - alert.track = "1" or true
-      # - alert_type has a value
-      # - alert_condition has a value
-      # - alert_comparator or alert_threshold has a value
-      # - counttype contains "number of"
-      # - actions has a non-empty value
-      # - action.email/webhook/script/etc = "1" or true
+      # CRITICAL FIX (v4.2.1): Filter by ACL app to get ONLY searches owned by this app
+      # The REST API returns ALL searches VISIBLE to the app (including globally shared ones)
+      # We must filter by acl.app to get only searches that actually BELONG to this app
+      # Without this filter, every app's savedsearches.json would contain ALL 188K+ searches!
       if $HAS_JQ; then
-        local app_alerts=$(echo "$response" | jq '[.entry[] | select(
-          .content["alert.track"] == "1" or .content["alert.track"] == true or
-          ((.content["alert_type"] // "") | length > 0) or
-          ((.content["alert_condition"] // "") | length > 0) or
-          ((.content["alert_comparator"] // "") | length > 0) or
-          ((.content["alert_threshold"] // "") | length > 0) or
-          ((.content["counttype"] // "") | test("number of"; "i")) or
-          ((.content["actions"] // "") | length > 0) or
-          .content["action.email"] == "1" or .content["action.email"] == true or
-          .content["action.webhook"] == "1" or .content["action.webhook"] == true or
-          .content["action.script"] == "1" or .content["action.script"] == true or
-          .content["action.slack"] == "1" or .content["action.slack"] == true or
-          .content["action.pagerduty"] == "1" or .content["action.pagerduty"] == true or
-          .content["action.summary_index"] == "1" or .content["action.summary_index"] == true or
-          .content["action.populate_lookup"] == "1" or .content["action.populate_lookup"] == true
-        )] | length' 2>/dev/null || echo 0)
-        ((alert_count += app_alerts))
+        local filtered_response
+        filtered_response=$(echo "$response" | jq --arg app "$app" '{
+          links: .links,
+          origin: .origin,
+          updated: .updated,
+          generator: .generator,
+          entry: [.entry[] | select(.acl.app == $app)],
+          paging: .paging
+        }' 2>/dev/null)
+
+        if [ -n "$filtered_response" ] && [ "$filtered_response" != "null" ]; then
+          echo "$filtered_response" > "$EXPORT_DIR/$app/savedsearches.json"
+
+          # Count entries after filtering
+          local app_saved=$(echo "$filtered_response" | jq '.entry | length // 0' 2>/dev/null || echo 0)
+          ((total_saved_searches += app_saved))
+
+          # Count alerts using SAME LOGIC as TypeScript parser (SINGLE SOURCE OF TRUTH)
+          # An entry is an alert if ANY of these are true:
+          # - alert.track = "1" or "true" or 1 or true (NOT "0" or "false")
+          # - alert_type is one of: "always", "custom", "number of events", "number of hosts", "number of sources"
+          # - alert_condition has a value
+          # - alert_comparator or alert_threshold has a value
+          # - counttype contains "number of"
+          # - actions has a non-empty value (comma-separated list of enabled actions)
+          # - action.email/webhook/script/etc = "1" or true (NOT "0" or false or "false")
+          local app_alerts=$(echo "$filtered_response" | jq '[.entry[] | select(
+            ((.content["alert.track"] // "") | tostring | . == "1" or . == "true") or
+            ((.content["alert_type"] // "") | ascii_downcase | . == "always" or . == "custom" or test("^number of")) or
+            ((.content["alert_condition"] // "") | length > 0) or
+            ((.content["alert_comparator"] // "") | length > 0) or
+            ((.content["alert_threshold"] // "") | length > 0) or
+            ((.content["counttype"] // "") | test("number of"; "i")) or
+            ((.content["actions"] // "") | split(",") | map(select(length > 0)) | length > 0) or
+            ((.content["action.email"] // "") | tostring | . == "1" or . == "true") or
+            ((.content["action.webhook"] // "") | tostring | . == "1" or . == "true") or
+            ((.content["action.script"] // "") | tostring | . == "1" or . == "true") or
+            ((.content["action.slack"] // "") | tostring | . == "1" or . == "true") or
+            ((.content["action.pagerduty"] // "") | tostring | . == "1" or . == "true") or
+            ((.content["action.summary_index"] // "") | tostring | . == "1" or . == "true") or
+            ((.content["action.populate_lookup"] // "") | tostring | . == "1" or . == "true")
+          )] | length' 2>/dev/null || echo 0)
+          ((alert_count += app_alerts))
+
+          debug "  $app: $app_saved saved searches ($app_alerts alerts)"
+        else
+          # Fallback: save unfiltered if jq filtering fails
+          echo "$response" > "$EXPORT_DIR/$app/savedsearches.json"
+          warn "Could not filter savedsearches for $app by ACL - saved unfiltered response"
+        fi
       else
-        # Fallback without jq - count lines with alert indicators
+        # Fallback without jq - save unfiltered response
+        echo "$response" > "$EXPORT_DIR/$app/savedsearches.json"
+        # Count alerts using grep (less accurate)
         local app_alerts=$(echo "$response" | grep -cE '"alert\.track"\s*:\s*(true|"1")' || echo 0)
         ((alert_count += app_alerts))
       fi
@@ -2589,7 +2618,8 @@ collect_alerts() {
   done
 
   STATS_ALERTS=$alert_count
-  success "Collected saved searches ($alert_count alerts found)"
+  STATS_SAVED_SEARCHES=$total_saved_searches
+  success "Collected $total_saved_searches saved searches ($alert_count alerts found)"
 }
 
 collect_rbac() {
@@ -3921,22 +3951,30 @@ generate_manifest() {
     local app_dashboards=$((app_classic + app_studio))
 
     if [ -f "$EXPORT_DIR/$app/savedsearches.json" ]; then
-      # Count alerts using SAME LOGIC as TypeScript parser (SINGLE SOURCE OF TRUTH)
+      # Count alerts using SAME LOGIC as TypeScript parser (SINGLE SOURCE OF TRUTH v4.2.1)
+      # Only count as alert if ENABLED alert indicators present:
+      # - alert.track = "1" or "true" (NOT "0" or "false")
+      # - alert_type = "always", "custom", or "number of ..." (NOT empty or other values)
+      # - alert_condition has a value
+      # - alert_comparator or alert_threshold has a value
+      # - counttype contains "number of"
+      # - actions has non-empty comma-separated values
+      # - action.* = "1" or "true" (NOT "0" or "false" or false)
       app_alerts=$(jq -r '[.entry[] | select(
-        .content["alert.track"] == "1" or .content["alert.track"] == true or
-        ((.content["alert_type"] // "") | length > 0) or
+        ((.content["alert.track"] // "") | tostring | . == "1" or . == "true") or
+        ((.content["alert_type"] // "") | ascii_downcase | . == "always" or . == "custom" or test("^number of")) or
         ((.content["alert_condition"] // "") | length > 0) or
         ((.content["alert_comparator"] // "") | length > 0) or
         ((.content["alert_threshold"] // "") | length > 0) or
         ((.content["counttype"] // "") | test("number of"; "i")) or
-        ((.content["actions"] // "") | length > 0) or
-        .content["action.email"] == "1" or .content["action.email"] == true or
-        .content["action.webhook"] == "1" or .content["action.webhook"] == true or
-        .content["action.script"] == "1" or .content["action.script"] == true or
-        .content["action.slack"] == "1" or .content["action.slack"] == true or
-        .content["action.pagerduty"] == "1" or .content["action.pagerduty"] == true or
-        .content["action.summary_index"] == "1" or .content["action.summary_index"] == true or
-        .content["action.populate_lookup"] == "1" or .content["action.populate_lookup"] == true
+        ((.content["actions"] // "") | split(",") | map(select(length > 0)) | length > 0) or
+        ((.content["action.email"] // "") | tostring | . == "1" or . == "true") or
+        ((.content["action.webhook"] // "") | tostring | . == "1" or . == "true") or
+        ((.content["action.script"] // "") | tostring | . == "1" or . == "true") or
+        ((.content["action.slack"] // "") | tostring | . == "1" or . == "true") or
+        ((.content["action.pagerduty"] // "") | tostring | . == "1" or . == "true") or
+        ((.content["action.summary_index"] // "") | tostring | . == "1" or . == "true") or
+        ((.content["action.populate_lookup"] // "") | tostring | . == "1" or . == "true")
       )] | length // 0' "$EXPORT_DIR/$app/savedsearches.json" 2>/dev/null || echo 0)
       app_saved=$(jq -r '.entry | length // 0' "$EXPORT_DIR/$app/savedsearches.json" 2>/dev/null || echo 0)
     fi
