@@ -9,7 +9,18 @@ fi
 
 ################################################################################
 #
-#  DynaBridge Splunk Cloud Export Script v4.2.1
+#  DynaBridge Splunk Cloud Export Script v4.2.4
+#
+#  v4.2.4 Changes:
+#    - Anonymization now creates TWO archives: original (untouched) + _masked (anonymized)
+#    - Preserves original data in case anonymization corrupts files
+#    - Users can re-run anonymization on original if needed without full re-export
+#    - Removed deprecated --quick flag (no longer needed)
+#    - RBAC/Users collection now OFF by default (use --rbac to enable)
+#    - Usage analytics collection now OFF by default (use --usage to enable)
+#    - Faster performance defaults: batch size 250 (was 100), API delay 50ms (was 250ms)
+#    - Added blocked endpoint skip list for known Splunk Cloud restrictions
+#    - Improved 404 handling: app-scoped resources now return empty (not error)
 #
 #  REST API-Only Data Collection for Splunk Cloud Migration to Dynatrace
 #
@@ -98,7 +109,7 @@ set -o pipefail  # Fail on pipe errors
 # SCRIPT CONFIGURATION
 # =============================================================================
 
-SCRIPT_VERSION="4.2.3"
+SCRIPT_VERSION="4.2.6"
 SCRIPT_NAME="DynaBridge Splunk Cloud Export"
 
 # ANSI color codes
@@ -155,8 +166,8 @@ EXPORT_ALL_APPS=true
 COLLECT_CONFIGS=true
 COLLECT_DASHBOARDS=true
 COLLECT_ALERTS=true
-COLLECT_RBAC=true
-COLLECT_USAGE=true
+COLLECT_RBAC=false        # OFF by default - global user/role data rarely needed for app migration
+COLLECT_USAGE=false       # OFF by default - requires _audit/_internal index access (blocked in most Splunk Cloud)
 COLLECT_INDEXES=true
 COLLECT_LOOKUPS=false
 COLLECT_AUDIT=false
@@ -169,9 +180,6 @@ SKIP_INTERNAL=false
 # This dramatically reduces export time when only specific apps are selected
 # Auto-enabled when --apps is used (unless --all-apps is also specified)
 SCOPE_TO_APPS=false
-
-# Quick mode - skips expensive global analytics entirely, just collects app configs
-QUICK_MODE=false
 
 # Non-interactive mode flag (set automatically when all params provided)
 NON_INTERACTIVE=false
@@ -187,14 +195,34 @@ ANON_EMAIL_COUNTER=0
 ANON_HOST_COUNTER=0
 
 # =============================================================================
+# SPLUNK CLOUD BLOCKED ENDPOINTS (v4.2.4)
+# =============================================================================
+# These endpoints are known to be blocked/restricted in Splunk Cloud environments.
+# The script will skip them automatically to avoid 403 errors and noise in logs.
+# Add endpoints here as we discover them from customer exports.
+SPLUNK_CLOUD_BLOCKED_ENDPOINTS=(
+  "/services/licenser/licenses"
+  "/services/licenser/pools"
+  "/services/deployment/server/clients"
+  "/services/cluster/master/info"
+  "/services/cluster/master/peers"
+  "/services/shcluster/captain/info"
+  "/services/shcluster/captain/members"
+  "/services/data/inputs/monitor"
+  "/services/data/inputs/tcp/raw"
+  "/services/data/inputs/tcp/cooked"
+  "/services/data/inputs/udp"
+)
+
+# =============================================================================
 # ENTERPRISE RESILIENCE CONFIGURATION (v4.0.0)
 # =============================================================================
 # These settings enable enterprise-scale exports (4000+ dashboards, 10K+ alerts)
 # Override via environment variables: BATCH_SIZE=50 ./dynabridge-splunk-cloud-export.sh
 
-# Pagination settings
-BATCH_SIZE=${BATCH_SIZE:-100}              # Items per API request
-RATE_LIMIT_DELAY=${RATE_LIMIT_DELAY:-0.1}  # Delay between paginated requests (100ms - polite but fast)
+# Pagination settings - OPTIMIZED for large enterprise exports (v4.2.5)
+BATCH_SIZE=${BATCH_SIZE:-250}              # Items per API request (increased from 100)
+RATE_LIMIT_DELAY=${RATE_LIMIT_DELAY:-0.05} # Delay between paginated requests (50ms - fast)
 
 # Timeout settings - GENEROUS defaults for enterprise Cloud environments
 CONNECT_TIMEOUT=${CONNECT_TIMEOUT:-30}     # Initial connection timeout
@@ -212,8 +240,8 @@ CHECKPOINT_ENABLED=${CHECKPOINT_ENABLED:-true}   # Enable checkpoint/resume capa
 CHECKPOINT_INTERVAL=50                           # Save checkpoint every N items
 CHECKPOINT_FILE=""                               # Set at runtime: .export_checkpoint
 
-# Rate limiting (aligned with Enterprise script)
-API_DELAY_SECONDS=0.25     # Delay between API calls (seconds) - 250ms
+# Rate limiting - OPTIMIZED for speed (v4.2.5)
+API_DELAY_SECONDS=0.05     # Delay between API calls (seconds) - 50ms (reduced from 250ms)
 MAX_CONCURRENT_SEARCHES=1  # Don't run multiple searches in parallel
 SEARCH_POLL_INTERVAL=1     # How often to check if search is done (seconds)
 CURRENT_DELAY=$API_DELAY_SECONDS
@@ -515,7 +543,6 @@ debug_config_state() {
   debug_log "CONFIG" "AUTH_METHOD=$AUTH_METHOD"
   debug_log "CONFIG" "EXPORT_ALL_APPS=$EXPORT_ALL_APPS"
   debug_log "CONFIG" "SCOPE_TO_APPS=$SCOPE_TO_APPS"
-  debug_log "CONFIG" "QUICK_MODE=$QUICK_MODE"
   debug_log "CONFIG" "COLLECT_RBAC=$COLLECT_RBAC"
   debug_log "CONFIG" "COLLECT_USAGE=$COLLECT_USAGE"
   debug_log "CONFIG" "COLLECT_INDEXES=$COLLECT_INDEXES"
@@ -994,6 +1021,19 @@ api_call() {
   # Use seconds only - %N (nanoseconds) not supported on macOS
   local start_time=$(date +%s)
 
+  # =========================================================================
+  # BLOCKED ENDPOINT CHECK (v4.2.4)
+  # Skip endpoints known to be blocked in Splunk Cloud to avoid noise
+  # =========================================================================
+  for blocked in "${SPLUNK_CLOUD_BLOCKED_ENDPOINTS[@]}"; do
+    if [[ "$endpoint" == *"$blocked"* ]]; then
+      log "INFO: Skipping known-blocked endpoint: $endpoint"
+      debug_log "API" "Skipped (blocked in Cloud): $endpoint"
+      echo '{"entry": [], "skipped": true, "reason": "Endpoint blocked in Splunk Cloud"}'
+      return 0
+    fi
+  done
+
   ((STATS_API_CALLS++))
   debug_log "API" "→ $method $endpoint"
 
@@ -1099,9 +1139,19 @@ api_call() {
         return 1
         ;;
       404)
-        debug_log "WARN" "Not found (404) on $endpoint"
-        warning "Resource not found (404): $endpoint"
-        return 1
+        # Check if this is an app-scoped resource query (expected to be empty for some apps)
+        # Pattern: /servicesNS/-/APPNAME/(data/ui/views|saved/searches|data/transforms|...)
+        if [[ "$endpoint" =~ /servicesNS/-/[^/]+/(data/ui/views|saved/searches|data/transforms|data/lookups) ]]; then
+          # This is likely an app with no resources of this type - just log at INFO level
+          log "INFO: No resources at $endpoint (app may have no items of this type)"
+          debug_log "INFO" "Empty app resource (404): $endpoint"
+          echo '{"entry": []}'  # Return empty result instead of error
+          return 0
+        else
+          debug_log "WARN" "Not found (404) on $endpoint"
+          warning "Resource not found (404): $endpoint"
+          return 1
+        fi
         ;;
       500|502|503)
         debug_log "WARN" "Server error ($http_code) on $endpoint"
@@ -2226,15 +2276,18 @@ select_data_categories() {
   toggle_category "1. Configurations" "COLLECT_CONFIGS" "(via REST - reconstructed from API)"
   toggle_category "2. Dashboards" "COLLECT_DASHBOARDS" "(Classic + Dashboard Studio)"
   toggle_category "3. Alerts & Saved Searches" "COLLECT_ALERTS" ""
-  toggle_category "4. Users & RBAC" "COLLECT_RBAC" "(usernames & roles only - NO passwords)"
-  toggle_category "5. Usage Analytics" "COLLECT_USAGE" "(via search on _audit)"
+  toggle_category "4. Users & RBAC" "COLLECT_RBAC" "(global user/role data - use --rbac to enable)"
+  toggle_category "5. Usage Analytics" "COLLECT_USAGE" "(requires _audit - often blocked in Cloud)"
   toggle_category "6. Index Statistics" "COLLECT_INDEXES" ""
   toggle_category "7. Lookup Contents" "COLLECT_LOOKUPS" "(may be large)"
   toggle_category "8. Anonymize Data" "ANONYMIZE_DATA" "(emails→fake, hosts→fake, IPs→redacted)"
 
   echo ""
   echo -e "  ${DIM}🔒 Privacy: User data includes names/roles only. Passwords are NEVER collected.${NC}"
-  echo -e "  ${CYAN}💡 Tip: Enable option 8 when sharing export with third parties.${NC}"
+  echo -e "  ${CYAN}💡 Tips:${NC}"
+  echo -e "  ${DIM}   - Options 4 (RBAC) and 5 (Usage) are OFF by default for faster exports${NC}"
+  echo -e "  ${DIM}   - Option 5 requires _audit/_internal access (often blocked in Cloud)${NC}"
+  echo -e "  ${DIM}   - Enable option 8 when sharing export with third parties${NC}"
   echo ""
   echo -ne "  ${YELLOW}Accept defaults? (Y/n): ${NC}"
   read -r accept_defaults
@@ -2834,24 +2887,36 @@ collect_app_analytics() {
   # -------------------------------------------------------------------------
   # 4. INDEX REFERENCES - Which indexes does THIS app query?
   # Uses _audit which IS accessible in Splunk Cloud
+  # OPTIMIZED: Added | sample 20 before expensive rex, removed info=granted (pipe filter)
   # -------------------------------------------------------------------------
   run_analytics_search \
-    "search index=_audit action=search info=granted app=\"$app\" earliest=-${USAGE_PERIOD} | rex field=search \"index\\s*=\\s*(?<idx>[\\w\\*_-]+)\" | stats count as query_count, dc(user) as unique_users by idx | where isnotnull(idx) | sort - query_count | head 50" \
+    "index=_audit action=search app=\"$app\" earliest=-${USAGE_PERIOD} | sample 20 | rex field=search \"index\\s*=\\s*(?<idx>[\\w\\*_-]+)\" | stats count as sample_count, dc(user) as unique_users by idx | eval estimated_query_count=sample_count*20 | where isnotnull(idx) | sort -estimated_query_count | head 50" \
     "$analysis_dir/index_references.json" \
     "Index references for $app" 2>/dev/null || true
 
   # -------------------------------------------------------------------------
   # 5. SOURCETYPE REFERENCES - Which sourcetypes does THIS app query?
   # Uses _audit which IS accessible in Splunk Cloud
+  # OPTIMIZED: Added | sample 20 before expensive rex, removed info=granted (pipe filter)
   # -------------------------------------------------------------------------
   run_analytics_search \
-    "search index=_audit action=search info=granted app=\"$app\" earliest=-${USAGE_PERIOD} | rex field=search \"sourcetype\\s*=\\s*(?<st>[\\w\\*_-]+)\" | stats count as query_count by st | where isnotnull(st) | sort - query_count | head 50" \
+    "index=_audit action=search app=\"$app\" earliest=-${USAGE_PERIOD} | sample 20 | rex field=search \"sourcetype\\s*=\\s*(?<st>[\\w\\*_-]+)\" | stats count as sample_count by st | eval estimated_query_count=sample_count*20 | where isnotnull(st) | sort -estimated_query_count | head 50" \
     "$analysis_dir/sourcetype_references.json" \
     "Sourcetype references for $app" 2>/dev/null || true
 
   # -------------------------------------------------------------------------
-  # 6. DASHBOARDS NEVER VIEWED - Candidates for elimination in THIS app
-  # Uses _audit and REST API (both accessible in Splunk Cloud)
+  # 6a. DASHBOARD VIEW COUNTS - Simpler query for this app (Curator correlates later)
+  # OPTIMIZED: Removed | rest + | join which often fails in Splunk Cloud
+  # -------------------------------------------------------------------------
+  run_analytics_search \
+    "index=_audit action=search search_type=dashboard app=\"$app\" earliest=-${USAGE_PERIOD} user!=\"splunk-system-user\" savedsearch_name=* | stats count as views by savedsearch_name | rename savedsearch_name as dashboard" \
+    "$analysis_dir/dashboard_view_counts.json" \
+    "Dashboard view counts for $app" 2>/dev/null || true
+
+  # -------------------------------------------------------------------------
+  # 6b. DASHBOARDS NEVER VIEWED - Legacy query (often fails in Splunk Cloud)
+  # Note: Uses | rest + | join which are often blocked. Curator app correlates
+  # dashboard_view_counts with manifest data as a more reliable alternative.
   # -------------------------------------------------------------------------
   run_analytics_search \
     "| rest /servicesNS/-/$app/data/ui/views | rename title as dashboard | table dashboard | join type=left dashboard [search index=_audit action=search search_type=dashboard app=\"$app\" earliest=-${USAGE_PERIOD} | where user!=\"splunk-system-user\" | stats count as views by savedsearch_name | rename savedsearch_name as dashboard] | where isnull(views) OR views=0 | table dashboard" \
@@ -2923,32 +2988,40 @@ collect_usage_analytics() {
   if [ -n "$app_filter" ]; then
     app_search_filter="$app_filter "
   fi
+  # OPTIMIZED: Moved user filter to search-time, removed redundant info=granted, changed latest to max
   run_analytics_search \
-    "search index=_audit action=search info=granted search_type=dashboard ${app_search_filter}earliest=-${USAGE_PERIOD} | where user!=\"splunk-system-user\" | stats count as view_count, dc(user) as unique_users, latest(_time) as last_viewed by app, savedsearch_name | rename savedsearch_name as dashboard | where isnotnull(dashboard) | sort -view_count | head 100" \
+    "index=_audit action=search search_type=dashboard ${app_search_filter}earliest=-${USAGE_PERIOD} user!=\"splunk-system-user\" savedsearch_name=* | stats count as view_count, dc(user) as unique_users, max(_time) as last_viewed by app, savedsearch_name | rename savedsearch_name as dashboard | sort -view_count | head 100" \
     "$EXPORT_DIR/dynabridge_analytics/usage_analytics/dashboard_views_top100.json" \
     "Top 100 viewed dashboards"
 
   # Dashboard view trends (weekly breakdown via _audit)
+  # OPTIMIZED: Moved filters to search-time
   run_analytics_search \
-    "search index=_audit action=search info=granted search_type=dashboard ${app_search_filter}earliest=-${USAGE_PERIOD} | where user!=\"splunk-system-user\" | bucket _time span=1w | stats count as views by _time, app, savedsearch_name | rename savedsearch_name as dashboard | where isnotnull(dashboard) | sort -_time | head 200" \
+    "index=_audit action=search search_type=dashboard ${app_search_filter}earliest=-${USAGE_PERIOD} user!=\"splunk-system-user\" savedsearch_name=* | bucket _time span=1w | stats count as views by _time, app, savedsearch_name | rename savedsearch_name as dashboard | sort -_time | head 200" \
     "$EXPORT_DIR/dynabridge_analytics/usage_analytics/dashboard_views_trend.json" \
     "Dashboard view trends"
 
-  # Dashboards never viewed in period (compare REST list vs audit records)
-  # Note: This counts all views including system user to be conservative about "never viewed"
-  # For scoped mode, filter the REST output by app
+  # Dashboard view counts - simplified query (correlation done in Curator app)
+  # OPTIMIZED: Removed | rest + | join which often fails in Splunk Cloud
+  # The Curator app will correlate this with the dashboard list from REST API
+  run_analytics_search \
+    "index=_audit action=search search_type=dashboard ${app_search_filter}earliest=-${USAGE_PERIOD} user!=\"splunk-system-user\" savedsearch_name=* | stats count as views by app, savedsearch_name | rename savedsearch_name as dashboard" \
+    "$EXPORT_DIR/dynabridge_analytics/usage_analytics/dashboard_view_counts.json" \
+    "Dashboard view counts"
+
+  # Legacy query for backwards compatibility (may fail in Splunk Cloud)
   local rest_app_filter=""
   if [ -n "$app_where" ]; then
     rest_app_filter="$app_where"
   fi
   run_analytics_search \
-    "| rest /servicesNS/-/-/data/ui/views | rename title as dashboard, eai:acl.app as app | table dashboard, app $rest_app_filter | join type=left dashboard [search index=_audit action=search search_type=dashboard ${app_search_filter}earliest=-${USAGE_PERIOD} | where user!=\"splunk-system-user\" | stats count as views by savedsearch_name | rename savedsearch_name as dashboard] | where isnull(views) OR views=0 | table dashboard, app" \
+    "| rest /servicesNS/-/-/data/ui/views | rename title as dashboard, eai:acl.app as app | table dashboard, app $rest_app_filter | join type=left dashboard [search index=_audit action=search search_type=dashboard ${app_search_filter}earliest=-${USAGE_PERIOD} user!=\"splunk-system-user\" | stats count as views by savedsearch_name | rename savedsearch_name as dashboard] | where isnull(views) OR views=0 | table dashboard, app" \
     "$EXPORT_DIR/dynabridge_analytics/usage_analytics/dashboards_never_viewed.json" \
-    "Never viewed dashboards"
+    "Never viewed dashboards (legacy)"
 
-  # If SPL failed (uses | rest), try fallback
+  # If SPL failed (uses | rest), use fallback - but we already have view counts
   if grep -q '"error"' "$EXPORT_DIR/dynabridge_analytics/usage_analytics/dashboards_never_viewed.json" 2>/dev/null; then
-    info "SPL search failed for dashboards never viewed, trying fallback..."
+    info "Legacy never-viewed query failed (expected in Splunk Cloud) - using view counts file instead"
     collect_dashboards_never_viewed_fallback "$EXPORT_DIR/dynabridge_analytics/usage_analytics/dashboards_never_viewed.json"
   fi
 
@@ -2963,27 +3036,31 @@ collect_usage_analytics() {
 
   # Most active users by search count (excluding system user)
   # In scoped mode: only counts searches in selected apps
+  # OPTIMIZED: Moved user filter to search-time, changed latest to max
   run_analytics_search \
-    "search index=_audit action=search ${app_search_filter}earliest=-${USAGE_PERIOD} | where user!=\"splunk-system-user\" | stats count as searches, dc(search) as unique_searches, latest(_time) as last_active by user | sort -searches | head 100" \
+    "index=_audit action=search ${app_search_filter}earliest=-${USAGE_PERIOD} user!=\"splunk-system-user\" | stats count as searches, dc(search) as unique_searches, max(_time) as last_active by user | sort -searches | head 100" \
     "$EXPORT_DIR/dynabridge_analytics/usage_analytics/users_most_active.json" \
     "Most active users"
 
   # Activity by role (excluding system user)
+  # Note: Uses | rest which may fail in Splunk Cloud
   run_analytics_search \
-    "search index=_audit action=search ${app_search_filter}earliest=-${USAGE_PERIOD} | where user!=\"splunk-system-user\" | stats count by user | join user [| rest /services/authentication/users | rename title as user | table user, roles] | stats sum(count) as searches by roles" \
+    "index=_audit action=search ${app_search_filter}earliest=-${USAGE_PERIOD} user!=\"splunk-system-user\" | stats count by user | join user [| rest /services/authentication/users | rename title as user | table user, roles] | stats sum(count) as searches by roles" \
     "$EXPORT_DIR/dynabridge_analytics/usage_analytics/activity_by_role.json" \
     "Activity by role"
 
   # Users with no activity in period (excluding system user from results)
   # In scoped mode: only checks for activity in selected apps
+  # Note: Uses | rest which may fail in Splunk Cloud
   run_analytics_search \
-    "| rest /services/authentication/users | rename title as user | where user!=\"splunk-system-user\" | table user, realname, email | join type=left user [search index=_audit action=search ${app_search_filter}earliest=-${USAGE_PERIOD} | stats count by user] | where isnull(count) | table user, realname, email" \
+    "| rest /services/authentication/users | rename title as user | where user!=\"splunk-system-user\" | table user, realname, email | join type=left user [index=_audit action=search ${app_search_filter}earliest=-${USAGE_PERIOD} | stats count by user] | where isnull(count) | table user, realname, email" \
     "$EXPORT_DIR/dynabridge_analytics/usage_analytics/users_inactive.json" \
     "Inactive users"
 
   # Daily active users trend (excluding system user)
+  # OPTIMIZED: Moved user filter to search-time
   run_analytics_search \
-    "search index=_audit action=search ${app_search_filter}earliest=-${USAGE_PERIOD} | where user!=\"splunk-system-user\" | timechart span=1d dc(user) as daily_active_users" \
+    "index=_audit action=search ${app_search_filter}earliest=-${USAGE_PERIOD} user!=\"splunk-system-user\" | timechart span=1d dc(user) as daily_active_users" \
     "$EXPORT_DIR/dynabridge_analytics/usage_analytics/daily_active_users.json" \
     "Daily active users"
 
@@ -3050,26 +3127,30 @@ collect_usage_analytics() {
   progress "Collecting search usage patterns..."
 
   # Most used search commands - in scoped mode, only from selected apps
+  # OPTIMIZED: Added | sample 10 before expensive rex extraction, estimate x10 for final counts
   run_analytics_search \
-    "search index=_audit action=search ${app_search_filter}earliest=-${USAGE_PERIOD} | rex field=search \"\\|\\s*(?<command>\\w+)\" | stats count by command | sort -count | head 50" \
+    "index=_audit action=search ${app_search_filter}earliest=-${USAGE_PERIOD} | sample 10 | rex field=search \"\\|\\s*(?<command>\\w+)\" | stats count as sample_count by command | eval estimated_count=sample_count*10 | sort -estimated_count | head 50" \
     "$EXPORT_DIR/dynabridge_analytics/usage_analytics/search_commands_popular.json" \
     "Popular search commands"
 
   # Search types breakdown
+  # OPTIMIZED: Moved filter to search-time (action=search is indexed)
   run_analytics_search \
-    "search index=_audit action=search ${app_search_filter}earliest=-${USAGE_PERIOD} | stats count by search_type | sort -count" \
+    "index=_audit action=search ${app_search_filter}earliest=-${USAGE_PERIOD} | stats count by search_type | sort -count" \
     "$EXPORT_DIR/dynabridge_analytics/usage_analytics/search_by_type.json" \
     "Search by type"
 
   # Slow searches
+  # OPTIMIZED: Moved total_run_time>30 to search-time, added | fields early to reduce memory
   run_analytics_search \
-    "search index=_audit action=search total_run_time>30 ${app_search_filter}earliest=-${USAGE_PERIOD} | stats avg(total_run_time) as avg_time, count as runs by search, app | sort -avg_time | head 50" \
+    "index=_audit action=search total_run_time>30 ${app_search_filter}earliest=-${USAGE_PERIOD} | fields total_run_time, search, app | stats avg(total_run_time) as avg_time, count as runs by search, app | sort -avg_time | head 50" \
     "$EXPORT_DIR/dynabridge_analytics/usage_analytics/searches_slow.json" \
     "Slow searches"
 
   # Most searched indexes - in scoped mode, only from searches in selected apps
+  # OPTIMIZED: Added | sample 20 before expensive rex extraction, estimate x20 for final counts
   run_analytics_search \
-    "search index=_audit action=search ${app_search_filter}earliest=-${USAGE_PERIOD} | rex field=search \"index\\s*=\\s*(?<searched_index>\\w+)\" | stats count by searched_index | sort -count | head 30" \
+    "index=_audit action=search ${app_search_filter}earliest=-${USAGE_PERIOD} | sample 20 | rex field=search \"index\\s*=\\s*(?<searched_index>\\w+)\" | stats count as sample_count by searched_index | eval estimated_count=sample_count*20 | sort -estimated_count | head 30" \
     "$EXPORT_DIR/dynabridge_analytics/usage_analytics/indexes_searched.json" \
     "Indexes searched"
 
@@ -3081,8 +3162,9 @@ collect_usage_analytics() {
   progress "Collecting data source usage..."
 
   # Most searched sourcetypes (uses _audit - works in Cloud) - scoped to apps
+  # OPTIMIZED: Added | sample 20 before expensive rex extraction, estimate x20 for final counts
   run_analytics_search \
-    "search index=_audit action=search ${app_search_filter}earliest=-${USAGE_PERIOD} | rex field=search \"sourcetype\\s*=\\s*(?<st>\\w+)\" | stats count by st | sort -count | head 30" \
+    "index=_audit action=search ${app_search_filter}earliest=-${USAGE_PERIOD} | sample 20 | rex field=search \"sourcetype\\s*=\\s*(?<st>\\w+)\" | stats count as sample_count by st | eval estimated_count=sample_count*20 | sort -estimated_count | head 30" \
     "$EXPORT_DIR/dynabridge_analytics/usage_analytics/sourcetypes_searched.json" \
     "Sourcetypes searched"
 
@@ -3890,8 +3972,8 @@ generate_summary() {
 $([ "$COLLECT_CONFIGS" = "true" ] && echo "- ✅ Configurations (via REST API reconstruction)" || echo "- ⏭️ Configurations (skipped)")
 $([ "$COLLECT_DASHBOARDS" = "true" ] && echo "- ✅ Dashboards (Classic and Dashboard Studio)" || echo "- ⏭️ Dashboards (skipped)")
 $([ "$COLLECT_ALERTS" = "true" ] && echo "- ✅ Alerts and Saved Searches" || echo "- ⏭️ Alerts (skipped)")
-$([ "$COLLECT_RBAC" = "true" ] && echo "- ✅ Users, Roles, and RBAC" || echo "- ⏭️ RBAC (skipped)")
-$([ "$COLLECT_USAGE" = "true" ] && echo "- ✅ Usage Analytics (last $USAGE_PERIOD)" || echo "- ⏭️ Usage Analytics (skipped)")
+$([ "$COLLECT_RBAC" = "true" ] && echo "- ✅ Users, Roles, and RBAC" || echo "- ⏭️ RBAC (skipped - use --rbac to enable)")
+$([ "$COLLECT_USAGE" = "true" ] && echo "- ✅ Usage Analytics (last $USAGE_PERIOD)" || echo "- ⏭️ Usage Analytics (skipped - use --usage to enable, requires _audit index)")
 $([ "$COLLECT_INDEXES" = "true" ] && echo "- ✅ Index Statistics" || echo "- ⏭️ Index Statistics (skipped)")
 $([ "$COLLECT_LOOKUPS" = "true" ] && echo "- ✅ Lookup Table Contents" || echo "- ⏭️ Lookup Contents (skipped)")
 
@@ -4782,12 +4864,18 @@ ANON_EOF
 # =============================================================================
 
 create_archive() {
+  # Usage: create_archive [keep_dir] [suffix]
+  # keep_dir: if "true", don't delete EXPORT_DIR after archiving (for masked workflow)
+  # suffix: optional suffix like "_masked" to add to archive name
+  local keep_dir="${1:-false}"
+  local suffix="${2:-}"
+
   # Finalize debug log before archiving (redirect to stderr for consistency)
   finalize_debug_log >&2
 
-  progress "Creating compressed archive..."
+  progress "Creating compressed archive${suffix:+ ($suffix)}..."
 
-  local archive_name="${EXPORT_NAME}.tar.gz"
+  local archive_name="${EXPORT_NAME}${suffix}.tar.gz"
 
   # Create tar archive
   tar -czf "$archive_name" -C "$(dirname "$EXPORT_DIR")" "$(basename "$EXPORT_DIR")"
@@ -4796,12 +4884,14 @@ create_archive() {
     local size=$(du -h "$archive_name" | cut -f1)
     success "Archive created: $archive_name ($size)"
 
-    # Clean up export directory
-    rm -rf "$EXPORT_DIR"
+    # Clean up export directory only if not keeping
+    if [ "$keep_dir" != "true" ]; then
+      rm -rf "$EXPORT_DIR"
+    fi
 
     echo ""
     echo -e "  ${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "  ${GREEN}  EXPORT COMPLETE${NC}"
+    echo -e "  ${GREEN}  ARCHIVE CREATED${NC}"
     echo -e "  ${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
     echo -e "  ${BOLD}Archive:${NC} $(pwd)/$archive_name"
@@ -4811,6 +4901,74 @@ create_archive() {
     error "Failed to create archive"
     return 1
   fi
+}
+
+# =============================================================================
+# MASKED ARCHIVE CREATION (v4.2.5)
+# Creates an anonymized copy while preserving the original
+# =============================================================================
+
+create_masked_archive() {
+  local masked_dir="${EXPORT_DIR}_masked"
+
+  echo ""
+  echo -e "  ${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+  echo -e "  ${CYAN}  CREATING MASKED (ANONYMIZED) ARCHIVE${NC}"
+  echo -e "  ${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+  echo ""
+  echo -e "  ${DIM}The original archive has been preserved.${NC}"
+  echo -e "  ${DIM}Now creating a separate anonymized copy...${NC}"
+  echo ""
+
+  # Copy export directory to masked version
+  progress "Copying export directory for anonymization..."
+  cp -r "$EXPORT_DIR" "$masked_dir"
+
+  if [ ! -d "$masked_dir" ]; then
+    error "Failed to create masked directory copy"
+    return 1
+  fi
+
+  # Temporarily switch EXPORT_DIR for anonymization
+  local original_export_dir="$EXPORT_DIR"
+  EXPORT_DIR="$masked_dir"
+
+  # Run anonymization on the masked copy
+  anonymize_export
+
+  # Create the masked archive (this will clean up the masked dir)
+  local masked_archive="${EXPORT_NAME}_masked.tar.gz"
+  progress "Creating masked archive..."
+  tar -czf "$masked_archive" -C "$(dirname "$masked_dir")" "$(basename "$masked_dir")"
+
+  if [ $? -eq 0 ]; then
+    local size=$(du -h "$masked_archive" | cut -f1)
+    success "Masked archive created: $masked_archive ($size)"
+
+    # Clean up masked directory
+    rm -rf "$masked_dir"
+
+    echo ""
+    echo -e "  ${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "  ${GREEN}  MASKED ARCHIVE CREATED${NC}"
+    echo -e "  ${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+    echo -e "  ${BOLD}Masked Archive:${NC} $(pwd)/$masked_archive"
+    echo -e "  ${BOLD}Size:${NC}           $size"
+    echo ""
+    echo -e "  ${YELLOW}Note:${NC} Share the ${BOLD}_masked${NC} archive with third parties."
+    echo -e "        Keep the original archive for your records."
+    echo ""
+  else
+    error "Failed to create masked archive"
+    EXPORT_DIR="$original_export_dir"
+    rm -rf "$masked_dir"
+    return 1
+  fi
+
+  # Restore original EXPORT_DIR and clean it up
+  EXPORT_DIR="$original_export_dir"
+  rm -rf "$EXPORT_DIR"
 }
 
 # =============================================================================
@@ -5185,18 +5343,28 @@ main() {
         OUTPUT_DIR="$2"
         shift 2
         ;;
+      --usage)
+        # Opt-in to usage analytics (requires _audit/_internal index access)
+        COLLECT_USAGE=true
+        shift
+        ;;
       --no-usage)
+        # Legacy flag - kept for backwards compatibility (usage is now off by default)
         COLLECT_USAGE=false
+        shift
+        ;;
+      --rbac)
+        # Opt-in to RBAC/users collection (global user and role data)
+        COLLECT_RBAC=true
+        shift
+        ;;
+      --no-rbac)
+        # Legacy flag - kept for backwards compatibility (RBAC is now off by default)
+        COLLECT_RBAC=false
         shift
         ;;
       --skip-internal)
         SKIP_INTERNAL=true
-        shift
-        ;;
-      --quick)
-        # Quick mode - dramatically faster exports by skipping global analytics
-        QUICK_MODE=true
-        SCOPE_TO_APPS=true
         shift
         ;;
       --scoped)
@@ -5220,22 +5388,15 @@ main() {
         echo "  --all-apps        Export all applications"
         echo "  --apps LIST       Comma-separated list of apps"
         echo "  --output DIR      Output directory"
-        echo "  --no-usage        Skip usage analytics collection"
+        echo "  --rbac            Collect RBAC/users data (OFF by default - global user/role data)"
+        echo "  --usage           Collect usage analytics (OFF by default - requires _audit/_internal)"
         echo "  --skip-internal   Skip searches requiring _internal index (use if restricted)"
-        echo "  --quick           Quick mode - TESTING ONLY (skips critical migration data)"
         echo "  --scoped          Scope all collections to selected apps only"
         echo "  -d, --debug       Enable verbose debug logging (writes to export_debug.log)"
         echo "  --help            Show this help"
         echo ""
-        echo "WARNING: --quick is for TESTING/VALIDATION ONLY"
-        echo "  Do NOT use --quick for migration analysis. It skips:"
-        echo "    - Usage analytics (who uses what, how often)"
-        echo "    - User/RBAC data (migration audience identification)"
-        echo "    - Priority assessment data"
-        echo "  For migration analysis, use full export (default) or --scoped."
-        echo ""
         echo "Performance Tips:"
-        echo "  For large environments, use --scoped (not --quick) with --apps:"
+        echo "  For large environments, use --scoped with --apps:"
         echo "    $0 --stack acme.splunkcloud.com --token XXX --apps myapp --scoped"
         echo ""
         echo "  This exports app configs + app-specific users/usage for migration analysis."
@@ -5303,13 +5464,21 @@ main() {
     else
       info "  Apps:  all (will fetch from API)"
     fi
-    if [ "$QUICK_MODE" = "true" ]; then
-      info "  Mode:  QUICK (no global analytics)"
-    elif [ "$SCOPE_TO_APPS" = "true" ]; then
+    if [ "$SCOPE_TO_APPS" = "true" ]; then
       info "  Mode:  App-scoped analytics"
     fi
     if [ "$DEBUG_MODE" = "true" ]; then
       info "  Debug: ENABLED (verbose logging)"
+    fi
+    if [ "$COLLECT_RBAC" = "true" ]; then
+      info "  RBAC:  ENABLED (collecting global user/role data)"
+    else
+      info "  RBAC:  DISABLED (use --rbac to enable)"
+    fi
+    if [ "$COLLECT_USAGE" = "true" ]; then
+      info "  Usage: ENABLED (requires _audit/_internal index access)"
+    else
+      info "  Usage: DISABLED (use --usage to enable)"
     fi
     echo ""
 
@@ -5350,9 +5519,7 @@ main() {
       echo -e "  ${YELLOW}║${NC}  several hours to complete.                                           ${YELLOW}║${NC}"
       echo -e "  ${YELLOW}║${NC}                                                                        ${YELLOW}║${NC}"
       echo -e "  ${YELLOW}║${NC}  ${DIM}To export specific apps with usage data, use:${NC}                        ${YELLOW}║${NC}"
-      echo -e "  ${YELLOW}║${NC}  ${DIM}  --apps \"app1,app2\" --scoped${NC}                                         ${YELLOW}║${NC}"
-      echo -e "  ${YELLOW}║${NC}                                                                        ${YELLOW}║${NC}"
-      echo -e "  ${YELLOW}║${NC}  ${DIM}(--quick is for testing only - skips migration-critical data)${NC}        ${YELLOW}║${NC}"
+      echo -e "  ${YELLOW}║${NC}  ${DIM}  --apps \"app1,app2\" --scoped --rbac --usage${NC}                          ${YELLOW}║${NC}"
       echo -e "  ${YELLOW}╚══════════════════════════════════════════════════════════════════════╝${NC}"
       echo ""
       echo -e "  ${CYAN}Continuing with full export...${NC}"
@@ -5400,7 +5567,7 @@ main() {
   # collections to those apps only. This dramatically reduces export time
   # in large environments (from hours to minutes).
   # ==========================================================================
-  if [ "$EXPORT_ALL_APPS" = "false" ] && [ "$QUICK_MODE" != "true" ]; then
+  if [ "$EXPORT_ALL_APPS" = "false" ]; then
     # Specific apps were selected - auto-enable scoped mode
     if [ "$SCOPE_TO_APPS" != "true" ]; then
       info "App-scoped mode auto-enabled (specific apps selected)"
@@ -5411,17 +5578,7 @@ main() {
   fi
 
   # Display mode information
-  if [ "$QUICK_MODE" = "true" ]; then
-    echo ""
-    echo "  ${GREEN}⚡ QUICK MODE ENABLED${NC}"
-    echo "  ${DIM}Exporting app configs only - skipping global analytics${NC}"
-    echo "  ${DIM}This dramatically reduces export time for large environments${NC}"
-    echo ""
-    # In quick mode, skip expensive global collections
-    COLLECT_RBAC=false   # Skip global user collection
-    COLLECT_USAGE=false  # Skip all usage analytics
-    COLLECT_INDEXES=false # Skip global index list
-  elif [ "$SCOPE_TO_APPS" = "true" ]; then
+  if [ "$SCOPE_TO_APPS" = "true" ]; then
     echo ""
     echo "  ${CYAN}📊 APP-SCOPED MODE${NC}"
     echo "  ${DIM}Collections scoped to selected apps: ${SELECTED_APPS[*]}${NC}"
@@ -5442,11 +5599,18 @@ main() {
     generate_troubleshooting_report
   fi
 
-  # Anonymize data if requested (before creating archive)
-  anonymize_export
+  # v4.2.5: Two-archive approach for anonymization
+  # Always create original archive first (untouched), then create masked copy if needed
+  if [ "$ANONYMIZE_DATA" = "true" ]; then
+    # Create original archive first, keeping EXPORT_DIR for masked copy
+    create_archive "true"  # keep_dir=true
 
-  # Create archive
-  create_archive
+    # Create masked (anonymized) archive from a copy
+    create_masked_archive
+  else
+    # No anonymization - just create single archive
+    create_archive
+  fi
 
   # Show export timing statistics (v4.0.0)
   show_export_timing_stats

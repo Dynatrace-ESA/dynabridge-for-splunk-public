@@ -269,11 +269,30 @@
 <h1>DynaBridge Splunk Cloud Export Script</h1>
 <h2>Prerequisites Guide for Splunk Cloud (Classic & Victoria Experience)</h2>
 <p>
-<strong>Version</strong>: 4.2.0
+<strong>Version</strong>: 4.2.4
 <strong>Last Updated</strong>: January 2026
 <strong>Related Documents</strong>: <a href="SCRIPT-GENERATED-ANALYTICS-REFERENCE.md">Script-Generated Analytics Reference</a> | <a href="SPLUNK-CLOUD-EXPORT-SPECIFICATION.md">Cloud Export Specification</a>
 </p>
-<h3>What's New in v4.2.0</h3>
+<h3>What's New in v4.2.4</h3>
+<h4>Two-Archive Anonymization (Preserves Original Data)</h4>
+<p>
+When anonymization is enabled, the script now creates <strong>TWO archives</strong>:
+</p>
+<ul>
+<li><code>{export_name}.tar.gz</code> - <strong>Original, untouched data</strong> (keep for your records)</li>
+<li><code>{export<em>name}</em>masked.tar.gz</code> - <strong>Anonymized copy</strong> (safe to share)</li>
+</ul>
+<p>
+This preserves the original data in case anonymization corrupts files. Users can re-run anonymization on the original without re-running the entire export.
+</p>
+<h4>Performance Optimizations</h4>
+<ul>
+<li><strong>RBAC/Users collection now OFF by default</strong> - Use <code>--rbac</code> flag to enable</li>
+<li><strong>Usage analytics now OFF by default</strong> - Use <code>--usage</code> flag to enable</li>
+<li><strong>Faster defaults</strong>: Batch size 250 (was 100), API delay 50ms (was 250ms)</li>
+<li><strong>Optimized queries</strong>: Sampling for expensive regex extractions, <code>max()</code> instead of <code>latest()</code> for faster aggregations</li>
+</ul>
+<h3>Previous v4.2.0 Changes</h3>
 <ul>
 <li><strong>App-Centric Dashboard Structure (v2)</strong>: Dashboards now saved to <code>{AppName}/dashboards/classic/</code> and <code>{AppName}/dashboards/studio/</code> to prevent name collisions</li>
 <li><strong>Manifest Schema v4.0</strong>: Added <code>archive<em>structure</em>version: "v2"</code> for DynaBridge to detect the new structure</li>

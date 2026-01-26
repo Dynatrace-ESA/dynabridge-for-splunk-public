@@ -1,4 +1,4 @@
-# DynaBridge Splunk Export Schema v3.4
+# DynaBridge Splunk Export Schema v4.0
 
 ## Purpose
 
@@ -426,6 +426,22 @@ Located at `_systeminfo/environment.json`:
 
 This file is **only present when data anonymization is enabled** (Option 9 in Enterprise, Option 8 in Cloud). It documents the anonymization process and serves as a receipt confirming the export has been sanitized.
 
+### Two-Archive Approach (v4.2.4+)
+
+When anonymization is enabled, the export script creates **TWO separate archives**:
+
+| Archive | Content | Purpose |
+|---------|---------|---------|
+| `{export_name}.tar.gz` | **Original, untouched data** | Keep for your records; re-run anonymization if needed |
+| `{export_name}_masked.tar.gz` | **Anonymized copy** | Safe to share with consultants, support teams, external parties |
+
+**Why Two Archives?**
+- Preserves original data in case anonymization corrupts files
+- Allows re-running anonymization without re-running the entire export
+- Clear naming makes it obvious which file is safe to share
+
+The `_anonymization_report.json` file is **only present in the `_masked` archive**.
+
 ### Schema
 
 ```json
@@ -674,6 +690,10 @@ Example for missing RBAC:
 
 | Schema Version | Export Tool Version | Changes |
 |----------------|---------------------|---------|
+| 4.0 | 4.2.4 | Two-archive anonymization (original + _masked), RBAC/usage OFF by default, query optimizations |
+| 4.0 | 4.2.0 | App-centric dashboard structure (v2): `{AppName}/dashboards/classic/` and `{AppName}/dashboards/studio/` |
+| 4.0 | 4.1.0 | App-scoped export mode (`--apps`, `--scoped`, `--quick`), debug mode |
+| 4.0 | 4.0.2 | Auto-fix for CRLF line endings (Windows download compatibility) |
 | 4.0 | 4.0.1 | Container-friendly progress display (newlines at 5% intervals for kubectl/docker exec) |
 | 4.0 | 4.0.0 | Enterprise resilience: paginated APIs, checkpoints, extended timeouts, timing stats |
 | 3.4 | 3.4.0 | Added ownership mapping for user-centric migration (dashboard_ownership.json, alert_ownership.json) |

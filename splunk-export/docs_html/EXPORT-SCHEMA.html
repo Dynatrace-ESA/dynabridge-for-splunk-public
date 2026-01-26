@@ -266,7 +266,7 @@
     </nav>
 
     <main class="content">
-<h1>DynaBridge Splunk Export Schema v3.4</h1>
+<h1>DynaBridge Splunk Export Schema v4.0</h1>
 <h2>Purpose</h2>
 <p>
 This document defines the <strong>guaranteed output schema</strong> for all DynaBridge Splunk exports. Regardless of Splunk environment size, version, or deployment type, exports MUST conform to this schema so DynaBridge can reliably parse them.
@@ -701,6 +701,30 @@ Located at <code>_systeminfo/environment.json</code>:
 <p>
 This file is <strong>only present when data anonymization is enabled</strong> (Option 9 in Enterprise, Option 8 in Cloud). It documents the anonymization process and serves as a receipt confirming the export has been sanitized.
 </p>
+<h3>Two-Archive Approach (v4.2.4+)</h3>
+<p>
+When anonymization is enabled, the export script creates <strong>TWO separate archives</strong>:
+</p>
+<table>
+<thead>
+<tr><th>Archive</th><th>Content</th><th>Purpose</th></tr>
+</thead>
+<tbody>
+<tr><td><code>{export_name}.tar.gz</code></td><td><strong>Original, untouched data</strong></td><td>Keep for your records; re-run anonymization if needed</td></tr>
+<tr><td><code>{export_name}_masked.tar.gz</code></td><td><strong>Anonymized copy</strong></td><td>Safe to share with consultants, support teams, external parties</td></tr>
+</tbody>
+</table>
+<p>
+<strong>Why Two Archives?</strong>
+</p>
+<ul>
+<li>Preserves original data in case anonymization corrupts files</li>
+<li>Allows re-running anonymization without re-running the entire export</li>
+<li>Clear naming makes it obvious which file is safe to share</li>
+</ul>
+<p>
+The <code><em>anonymization</em>report.json</code> file is <strong>only present in the <code>_masked</code> archive</strong>.
+</p>
 <h3>Schema</h3>
 <pre><code class="language-json">{
   &quot;anonymization_applied&quot;: true,
@@ -948,6 +972,10 @@ Example for missing RBAC:
 <tr><th>Schema Version</th><th>Export Tool Version</th><th>Changes</th></tr>
 </thead>
 <tbody>
+<tr><td>4.0</td><td>4.2.4</td><td>Two-archive anonymization (original + _masked), RBAC/usage OFF by default, query optimizations</td></tr>
+<tr><td>4.0</td><td>4.2.0</td><td>App-centric dashboard structure (v2): <code>{AppName}/dashboards/classic/</code> and <code>{AppName}/dashboards/studio/</code></td></tr>
+<tr><td>4.0</td><td>4.1.0</td><td>App-scoped export mode (<code>--apps</code>, <code>--scoped</code>, <code>--quick</code>), debug mode</td></tr>
+<tr><td>4.0</td><td>4.0.2</td><td>Auto-fix for CRLF line endings (Windows download compatibility)</td></tr>
 <tr><td>4.0</td><td>4.0.1</td><td>Container-friendly progress display (newlines at 5% intervals for kubectl/docker exec)</td></tr>
 <tr><td>4.0</td><td>4.0.0</td><td>Enterprise resilience: paginated APIs, checkpoints, extended timeouts, timing stats</td></tr>
 <tr><td>3.4</td><td>3.4.0</td><td>Added ownership mapping for user-centric migration (dashboard_ownership.json, alert_ownership.json)</td></tr>

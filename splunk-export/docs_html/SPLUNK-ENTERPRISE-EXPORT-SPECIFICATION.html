@@ -267,7 +267,7 @@
 
     <main class="content">
 <h1>DynaBridge Splunk Enterprise Export Script - Comprehensive Specification</h1>
-<h2>Version 4.2.0 | Complete Data Collection Framework</h2>
+<h2>Version 4.2.4 | Complete Data Collection Framework</h2>
 <p>
 <strong>Last Updated</strong>: January 2026
 <strong>Related Documents</strong>: <a href="SCRIPT-GENERATED-ANALYTICS-REFERENCE.md">Script-Generated Analytics Reference</a> | <a href="README-SPLUNK-ENTERPRISE.md">Enterprise README</a> | <a href="EXPORT-SCHEMA.md">Export Schema</a>
@@ -285,6 +285,27 @@ This specification defines the complete requirements for a Splunk data collectio
 <li><strong>Ownership & RBAC</strong>: Users, groups, roles, capabilities, object ownership</li>
 <li><strong>Usage Analytics</strong>: Query frequency, dashboard views, alert triggers, index volume trends</li>
 <li><strong>Migration Prioritization</strong>: Scoring of high-value assets worth migrating</li>
+</ul>
+<hr>
+<h2>What's New in v4.2.4</h2>
+<h3>Two-Archive Anonymization (Preserves Original Data)</h3>
+<p>
+When anonymization is enabled, the script now creates <strong>TWO separate archives</strong>:
+</p>
+<ul>
+<li><code>{export_name}.tar.gz</code> - <strong>Original, untouched data</strong> (keep for your records)</li>
+<li><code>{export<em>name}</em>masked.tar.gz</code> - <strong>Anonymized copy</strong> (safe to share with third parties)</li>
+</ul>
+<p>
+This preserves the original data in case anonymization corrupts files. Users can re-run anonymization on the original without re-running the entire export.
+</p>
+<h3>Performance Optimizations</h3>
+<ul>
+<li><strong>RBAC/Users collection now OFF by default</strong> - Use <code>--rbac</code> flag to enable</li>
+<li><strong>Usage analytics now OFF by default</strong> - Use <code>--usage</code> flag to enable</li>
+<li><strong>Faster defaults</strong>: Batch size 250 (was 100), API delay 50ms (was 250ms)</li>
+<li><strong>Optimized queries</strong>: Sampling for expensive regex extractions, <code>max()</code> instead of <code>latest()</code> for faster aggregations</li>
+<li><strong>Savedsearches ACL fix</strong>: Now correctly filters searches by app ownership</li>
 </ul>
 <hr>
 <h2>What's New in v4.2.0</h2>

@@ -1,6 +1,6 @@
 # DynaBridge Splunk Cloud Export Script - Technical Specification
 
-## Version 4.2.0 | REST API-Only Data Collection for Splunk Cloud
+## Version 4.2.4 | REST API-Only Data Collection for Splunk Cloud
 
 **Last Updated**: January 2026
 **Related Documents**: [Script-Generated Analytics Reference](SCRIPT-GENERATED-ANALYTICS-REFERENCE.md) | [Cloud README](README-SPLUNK-CLOUD.md) | [Export Schema](EXPORT-SCHEMA.md)
@@ -9,6 +9,23 @@
 
 > **Developed for Dynatrace One by Enterprise Solutions & Architecture**
 > *An ACE Services Division of Dynatrace*
+
+---
+
+## What's New in v4.2.4
+
+### Two-Archive Anonymization (Preserves Original Data)
+When anonymization is enabled, the script now creates **TWO separate archives**:
+- `{export_name}.tar.gz` - **Original, untouched data** (keep for your records)
+- `{export_name}_masked.tar.gz` - **Anonymized copy** (safe to share with third parties)
+
+This preserves the original data in case anonymization corrupts files. Users can re-run anonymization on the original without re-running the entire export.
+
+### Performance Optimizations
+- **RBAC/Users collection now OFF by default** - Use `--rbac` flag to enable
+- **Usage analytics now OFF by default** - Use `--usage` flag to enable
+- **Faster defaults**: Batch size 250 (was 100), API delay 50ms (was 250ms)
+- **Optimized queries**: Sampling for expensive regex extractions, `max()` instead of `latest()` for faster aggregations
 
 ---
 

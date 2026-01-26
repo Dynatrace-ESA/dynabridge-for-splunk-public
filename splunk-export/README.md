@@ -1,15 +1,27 @@
 # DynaBridge Splunk Export Scripts
 
-**Version**: 4.2.0
+**Version**: 4.2.4
 **Last Updated**: January 2026
 
-## What's New in v4.2.0
+## What's New in v4.2.4
 
-**App-Centric Dashboard Structure (v2)** - Dashboards are now organized by app to prevent name collisions:
-- Dashboards saved to `{AppName}/dashboards/classic/` and `{AppName}/dashboards/studio/`
-- No more flat `dashboards_classic/` and `dashboards_studio/` folders at root
-- Multiple apps can now have dashboards with the same name without data loss
-- Manifest schema updated to v4.0 with `archive_structure_version: "v2"`
+### Two-Archive Anonymization (Preserves Original Data)
+When anonymization is enabled, the script now creates **TWO archives**:
+- `{export_name}.tar.gz` - **Original, untouched data**
+- `{export_name}_masked.tar.gz` - **Anonymized copy for sharing**
+
+This preserves the original data in case anonymization corrupts files. Users can re-run anonymization on the original without re-running the entire export.
+
+### Performance Optimizations
+- **RBAC/Users collection now OFF by default** - Use `--rbac` to enable
+- **Usage analytics now OFF by default** - Use `--usage` to enable
+- **Faster defaults**: Batch size 250 (was 100), API delay 50ms (was 250ms)
+- **Optimized queries**: Sampling for expensive regex extractions, `max()` instead of `latest()` for faster aggregations
+- **Savedsearches ACL fix**: Now correctly filters searches by app ownership
+
+### Previous v4.2.0 Changes
+- **App-Centric Dashboard Structure (v2)**: Dashboards saved to `{AppName}/dashboards/classic/` and `{AppName}/dashboards/studio/`
+- **Manifest Schema v4.0**: Added `archive_structure_version: "v2"`
 
 ---
 
@@ -129,12 +141,14 @@ Both scripts include enterprise-scale features for large environments:
 
 | Feature | Default | Description |
 |---------|---------|-------------|
-| Batch Processing | 100 items/request | Handles 4000+ dashboards, 10K+ alerts |
+| Batch Processing | **250 items/request** | Handles 4000+ dashboards, 10K+ alerts |
 | API Timeout | 120 seconds | Extended timeout for large queries |
 | Max Runtime | 4 hours | Prevents runaway exports |
 | Retry Logic | 3 attempts | Exponential backoff on failures |
 | Checkpoint/Resume | Enabled | Resume interrupted exports |
-| Rate Limiting | 100ms delay | Prevents API throttling |
+| Rate Limiting | **50ms delay** | Faster while preventing API throttling |
+| RBAC Collection | **OFF** (use `--rbac`) | Enable when you need user/role data |
+| Usage Analytics | **OFF** (use `--usage`) | Enable when you need usage metrics |
 
 ### Automation Support
 
@@ -228,7 +242,23 @@ Each markdown document has a corresponding `.dialog.html` version for viewing wi
 
 ## Data Anonymization
 
-Both scripts support data anonymization for secure sharing with third parties:
+Both scripts support data anonymization for secure sharing with third parties.
+
+### Two-Archive Approach (v4.2.4)
+
+When anonymization is enabled, the script creates **TWO separate archives**:
+
+```
+{export_name}.tar.gz          ← Original data (keep for your records)
+{export_name}_masked.tar.gz   ← Anonymized copy (safe to share)
+```
+
+**Why Two Archives?**
+- **Preserves original** - If anonymization corrupts any files, you have the original
+- **Re-run without re-export** - Can re-anonymize the original if needed
+- **Clear naming** - Obvious which file is safe to share
+
+### What Gets Anonymized
 
 | Data Type | Anonymization Pattern |
 |-----------|----------------------|
@@ -243,7 +273,9 @@ Both scripts support data anonymization for secure sharing with third parties:
 - **Irreversible** - SHA-256 hashing, originals cannot be recovered
 - **Relationship preserved** - Data relationships remain intact
 
-Enable anonymization when sharing exports with consultants, support teams, or uploading to shared environments.
+**When to Use:**
+- Share the `_masked` archive with consultants, support teams, or uploading to shared environments
+- Keep the original archive for your internal records
 
 ---
 
@@ -361,6 +393,9 @@ Enable anonymization when sharing exports with consultants, support teams, or up
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 4.2.4 | Jan 2026 | Two-archive anonymization, RBAC/usage OFF by default, query optimizations |
+| 4.2.0 | Jan 2026 | App-centric dashboard structure (v2), manifest schema v4.0 |
+| 4.1.0 | Jan 2026 | App-scoped export mode (`--apps`, `--scoped`, `--quick`), debug mode |
 | 4.0.2 | Jan 2026 | Auto-fix for CRLF line endings (Windows download compatibility) |
 | 4.0.1 | Jan 2026 | Container-friendly progress display for kubectl/docker |
 | 4.0.0 | Jan 2026 | Enterprise resilience: pagination, checkpoints, retry logic |

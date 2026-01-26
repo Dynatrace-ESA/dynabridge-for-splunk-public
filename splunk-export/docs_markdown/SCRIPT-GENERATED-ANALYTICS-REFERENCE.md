@@ -3,8 +3,27 @@
 ## DynaBridge Splunk Export - Complete Analytics File Reference
 
 **Applies To**: Splunk Enterprise & Splunk Cloud Export Scripts
-**Version**: 4.0.1 (Enterprise) / 4.0.1 (Cloud)
+**Version**: 4.2.4 (Enterprise) / 4.2.4 (Cloud)
 **Last Updated**: January 2026
+
+### Important: v4.2.4 Default Behavior Change
+
+**RBAC/Users and Usage Analytics are now OFF by default** for faster exports. To collect these analytics files, you must explicitly enable them:
+
+```bash
+# Enable RBAC/user collection
+./dynabridge-splunk-export.sh --rbac ...
+
+# Enable usage analytics collection
+./dynabridge-splunk-export.sh --usage ...
+
+# Enable both
+./dynabridge-splunk-export.sh --rbac --usage ...
+```
+
+Without these flags, the following file categories will be empty or skipped:
+- User Activity Analytics (requires `--rbac`)
+- Usage-based analytics (requires `--usage`)
 
 ---
 

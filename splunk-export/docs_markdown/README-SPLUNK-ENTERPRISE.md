@@ -1,11 +1,27 @@
 # DynaBridge Splunk Enterprise Export Script
 ## READ THIS FIRST - Complete Prerequisites Guide
 
-**Version**: 4.2.0
+**Version**: 4.2.4
 **Last Updated**: January 2026
 **Related Documents**: [Script-Generated Analytics Reference](SCRIPT-GENERATED-ANALYTICS-REFERENCE.md) | [Enterprise Export Specification](SPLUNK-ENTERPRISE-EXPORT-SPECIFICATION.md) | [Export Improvement Analysis](EXPORT-IMPROVEMENT-ANALYSIS.md)
 
-### What's New in v4.2.0
+### What's New in v4.2.4
+
+#### Two-Archive Anonymization (Preserves Original Data)
+When anonymization is enabled, the script now creates **TWO archives**:
+- `{export_name}.tar.gz` - **Original, untouched data** (keep for your records)
+- `{export_name}_masked.tar.gz` - **Anonymized copy** (safe to share)
+
+This preserves the original data in case anonymization corrupts files. Users can re-run anonymization on the original without re-running the entire export.
+
+#### Performance Optimizations
+- **RBAC/Users collection now OFF by default** - Use `--rbac` flag to enable
+- **Usage analytics now OFF by default** - Use `--usage` flag to enable
+- **Faster defaults**: Batch size 250 (was 100), API delay 50ms (was 250ms)
+- **Optimized queries**: Sampling for expensive regex extractions, `max()` instead of `latest()` for faster aggregations
+- **Savedsearches ACL fix**: Now correctly filters searches by app ownership
+
+### Previous v4.2.0 Changes
 
 - **App-Centric Dashboard Structure (v2)**: Dashboards now saved to `{AppName}/dashboards/classic/` and `{AppName}/dashboards/studio/` to prevent name collisions
 - **Manifest Schema v4.0**: Added `archive_structure_version: "v2"` for DynaBridge to detect the new structure

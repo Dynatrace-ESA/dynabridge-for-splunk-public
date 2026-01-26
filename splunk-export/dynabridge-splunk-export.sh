@@ -9,7 +9,18 @@ fi
 
 ################################################################################
 #
-#  DynaBridge Splunk Export Script v4.2.0
+#  DynaBridge Splunk Export Script v4.2.4
+#
+#  v4.2.4 Changes:
+#    - Anonymization now creates TWO archives: original (untouched) + _masked (anonymized)
+#    - Preserves original data in case anonymization corrupts files
+#    - Users can re-run anonymization on original if needed without full re-export
+#    - RBAC/Users collection now OFF by default (use --rbac to enable)
+#    - Usage analytics collection now OFF by default (use --usage to enable)
+#    - Faster performance defaults: batch size 250 (was 100), API delay 50ms (was 250ms)
+#    - Optimized usage analytics queries with sampling for expensive regex extractions
+#    - Changed latest() to max() for faster time aggregations
+#    - Moved filters to search-time for better performance
 #
 #  Complete Splunk Environment Data Collection for Migration to Dynatrace
 #
@@ -78,7 +89,7 @@ set -o pipefail  # Fail on pipe errors
 # SCRIPT CONFIGURATION
 # =============================================================================
 
-SCRIPT_VERSION="4.2.1"
+SCRIPT_VERSION="4.2.4"
 SCRIPT_NAME="DynaBridge Splunk Export"
 
 # ANSI color codes
@@ -134,8 +145,8 @@ EXPORT_ALL_APPS=true
 COLLECT_CONFIGS=true
 COLLECT_DASHBOARDS=true
 COLLECT_ALERTS=true
-COLLECT_RBAC=true
-COLLECT_USAGE=true
+COLLECT_RBAC=false          # OFF by default - use --rbac to enable (slow, often not needed)
+COLLECT_USAGE=false         # OFF by default - use --usage to enable (slow analytics queries)
 COLLECT_INDEXES=true
 COLLECT_LOOKUPS=false
 COLLECT_AUDIT=false
@@ -159,7 +170,7 @@ DEBUG_MODE=false
 DEBUG_LOG_FILE=""
 
 # Rate limiting (to avoid impacting Splunk performance)
-API_DELAY_SECONDS=0.25     # Delay between API calls (seconds) - 250ms
+API_DELAY_SECONDS=0.05     # Delay between API calls (seconds) - 50ms (was 250ms)
 MAX_CONCURRENT_SEARCHES=1  # Don't run multiple searches in parallel
 SEARCH_POLL_INTERVAL=1     # How often to check if search is done (seconds)
 
@@ -170,8 +181,8 @@ SEARCH_POLL_INTERVAL=1     # How often to check if search is done (seconds)
 # Override via environment variables: BATCH_SIZE=50 ./dynabridge-splunk-export.sh
 
 # Pagination settings
-BATCH_SIZE=${BATCH_SIZE:-100}              # Items per API request
-RATE_LIMIT_DELAY=${RATE_LIMIT_DELAY:-0.1}  # Delay between paginated requests (100ms - polite but fast)
+BATCH_SIZE=${BATCH_SIZE:-250}              # Items per API request (was 100, increased for speed)
+RATE_LIMIT_DELAY=${RATE_LIMIT_DELAY:-0.05} # Delay between paginated requests (50ms - was 100ms)
 
 # Timeout settings - GENEROUS defaults for enterprise environments
 API_TIMEOUT=${API_TIMEOUT:-120}            # Per-request timeout (2 min - handles large result sets)
@@ -3339,6 +3350,111 @@ collect_system_info() {
   success "System information collected"
 }
 
+# =============================================================================
+# SYSTEM-LEVEL MACROS COLLECTION
+# =============================================================================
+# Splunk Enterprise stores global macros in multiple locations:
+#
+# 1. $SPLUNK_HOME/etc/system/local/macros.conf - System-level (automatically global)
+# 2. $SPLUNK_HOME/etc/apps/<app>/local/macros.conf with export=system in metadata
+#
+# The configuration precedence order (highest to lowest):
+#   1. etc/users/<user>/<app>/local/macros.conf (private)
+#   2. etc/apps/<app>/local/macros.conf (app-level)
+#   3. etc/apps/<app>/default/macros.conf (app defaults)
+#   4. etc/system/local/macros.conf (GLOBAL - captured here)
+#   5. etc/apps/*/local/macros.conf with export=system
+#   6. etc/apps/*/default/macros.conf with export=system
+#   7. etc/system/default/macros.conf (never modify)
+#
+# This function captures:
+#   - System-level macros (etc/system/local/)
+#   - User-level macros if COLLECT_USER_MACROS is enabled
+#
+# App-level macros and metadata are captured in collect_app_configs()
+# =============================================================================
+collect_system_macros() {
+  progress "Collecting system-level macros..."
+
+  local macros_found=0
+
+  # Create system directory structure in export
+  # Using _system prefix to distinguish from app directories
+  mkdir -p "$EXPORT_DIR/_system/local"
+  mkdir -p "$EXPORT_DIR/_system/default"
+
+  # Capture system/local macros (administrator-created global macros)
+  if [ -f "$SPLUNK_HOME/etc/system/local/macros.conf" ]; then
+    cp "$SPLUNK_HOME/etc/system/local/macros.conf" "$EXPORT_DIR/_system/local/"
+    local count=$(grep -c '^\[' "$SPLUNK_HOME/etc/system/local/macros.conf" 2>/dev/null || echo 0)
+    macros_found=$((macros_found + count))
+    log "Copied system/local/macros.conf ($count macros)"
+  fi
+
+  # Capture system/default macros (Splunk-provided, for reference only)
+  if [ -f "$SPLUNK_HOME/etc/system/default/macros.conf" ]; then
+    cp "$SPLUNK_HOME/etc/system/default/macros.conf" "$EXPORT_DIR/_system/default/"
+    local count=$(grep -c '^\[' "$SPLUNK_HOME/etc/system/default/macros.conf" 2>/dev/null || echo 0)
+    macros_found=$((macros_found + count))
+    log "Copied system/default/macros.conf ($count macros, reference only)"
+  fi
+
+  # Also capture system-level metadata if it exists
+  if [ -d "$SPLUNK_HOME/etc/system/metadata" ]; then
+    mkdir -p "$EXPORT_DIR/_system/metadata"
+    for meta_file in "default.meta" "local.meta"; do
+      if [ -f "$SPLUNK_HOME/etc/system/metadata/$meta_file" ]; then
+        cp "$SPLUNK_HOME/etc/system/metadata/$meta_file" "$EXPORT_DIR/_system/metadata/"
+        log "Copied system/metadata/$meta_file"
+      fi
+    done
+  fi
+
+  # Optionally capture user-level macros (private macros per user)
+  # This is disabled by default as user macros may contain sensitive/private searches
+  if [ "${COLLECT_USER_MACROS:-false}" = true ] && [ -d "$SPLUNK_HOME/etc/users" ]; then
+    info "Collecting user-level macros..."
+    mkdir -p "$EXPORT_DIR/_users"
+
+    local user_macro_count=0
+    for user_dir in "$SPLUNK_HOME/etc/users/"*/; do
+      if [ -d "$user_dir" ]; then
+        local user=$(basename "$user_dir")
+
+        for app_dir in "$user_dir"*/; do
+          if [ -d "$app_dir" ]; then
+            local app=$(basename "$app_dir")
+
+            if [ -f "$app_dir/local/macros.conf" ]; then
+              mkdir -p "$EXPORT_DIR/_users/$user/$app/local"
+              cp "$app_dir/local/macros.conf" "$EXPORT_DIR/_users/$user/$app/local/"
+              local count=$(grep -c '^\[' "$app_dir/local/macros.conf" 2>/dev/null || echo 0)
+              user_macro_count=$((user_macro_count + count))
+            fi
+
+            # Also capture user-level metadata
+            if [ -f "$app_dir/metadata/local.meta" ]; then
+              mkdir -p "$EXPORT_DIR/_users/$user/$app/metadata"
+              cp "$app_dir/metadata/local.meta" "$EXPORT_DIR/_users/$user/$app/metadata/"
+            fi
+          fi
+        done
+      fi
+    done
+
+    if [ "$user_macro_count" -gt 0 ]; then
+      log "Collected $user_macro_count user-level macros"
+      macros_found=$((macros_found + user_macro_count))
+    fi
+  fi
+
+  if [ "$macros_found" -gt 0 ]; then
+    success "System-level macros collected ($macros_found total)"
+  else
+    info "No system-level macros found (macros may be in app directories)"
+  fi
+}
+
 collect_app_configs() {
   local app=$1
   local app_path="$SPLUNK_HOME/etc/apps/$app"
@@ -3405,6 +3521,18 @@ collect_app_configs() {
     mkdir -p "$EXPORT_DIR/$app/lookups"
     cp "$app_path/lookups/"*.csv "$EXPORT_DIR/$app/lookups/" 2>/dev/null
     log "Copied lookup tables from $app"
+  fi
+
+  # Export metadata files (essential for determining macro export scope)
+  # The local.meta file contains [macros/<name>] export = system for globally shared macros
+  if [ -d "$app_path/metadata" ]; then
+    mkdir -p "$EXPORT_DIR/$app/metadata"
+    for meta_file in "default.meta" "local.meta"; do
+      if [ -f "$app_path/metadata/$meta_file" ]; then
+        cp "$app_path/metadata/$meta_file" "$EXPORT_DIR/$app/metadata/"
+        log "Copied metadata: $app/metadata/$meta_file"
+      fi
+    done
   fi
 
   # Count alerts
@@ -4007,49 +4135,64 @@ collect_app_analytics() {
 
   # -------------------------------------------------------------------------
   # 1. DASHBOARD VIEWS - Top dashboards in THIS app by view count
+  # OPTIMIZED: Moved filters to search-time, changed latest() to max()
   # -------------------------------------------------------------------------
   run_app_search \
-    "search index=_audit action=search info=granted search_type=dashboard app=\"$app\" | stats count as view_count, dc(user) as unique_users, latest(_time) as last_viewed by dashboard | sort - view_count | head 100" \
+    "index=_audit action=search search_type=dashboard app=\"$app\" earliest=-${USAGE_PERIOD} user!=splunk-system-user | stats count as view_count, dc(user) as unique_users, max(_time) as last_viewed by dashboard | sort -view_count | head 100" \
     "$analysis_dir/dashboard_views.json" \
     "Dashboard views for $app"
 
   # -------------------------------------------------------------------------
   # 2. ALERT FIRING STATS - Alert execution stats for THIS app's alerts
+  # OPTIMIZED: Removed status=*, changed latest() to max(), simplified eval
   # -------------------------------------------------------------------------
   run_app_search \
-    "search index=_internal sourcetype=scheduler app=\"$app\" status=* | stats count as total_runs, sum(eval(if(status=\"success\",1,0))) as successful, sum(eval(if(status=\"skipped\",1,0))) as skipped, sum(eval(if(status!=\"success\" AND status!=\"skipped\",1,0))) as failed, latest(_time) as last_run by savedsearch_name | sort - total_runs | head 100" \
+    "index=_internal sourcetype=scheduler app=\"$app\" earliest=-${USAGE_PERIOD} | stats count as total_runs, sum(eval(status=\"success\")) as successful, sum(eval(status=\"skipped\")) as skipped, sum(eval(status!=\"success\" AND status!=\"skipped\")) as failed, max(_time) as last_run by savedsearch_name | sort -total_runs | head 100" \
     "$analysis_dir/alert_firing.json" \
     "Alert firing stats for $app"
 
   # -------------------------------------------------------------------------
   # 3. SAVED SEARCH USAGE - Run frequency for THIS app's saved searches
+  # OPTIMIZED: Added | fields early, changed latest() to max()
   # -------------------------------------------------------------------------
   run_app_search \
-    "search index=_internal sourcetype=scheduler app=\"$app\" | stats count as run_count, avg(run_time) as avg_runtime, max(run_time) as max_runtime, latest(_time) as last_run by savedsearch_name | sort - run_count | head 100" \
+    "index=_internal sourcetype=scheduler app=\"$app\" earliest=-${USAGE_PERIOD} | fields savedsearch_name, run_time, _time | stats count as run_count, avg(run_time) as avg_runtime, max(run_time) as max_runtime, max(_time) as last_run by savedsearch_name | sort -run_count | head 100" \
     "$analysis_dir/search_usage.json" \
     "Search usage for $app"
 
   # -------------------------------------------------------------------------
   # 4. INDEX REFERENCES - Which indexes does THIS app query?
+  # OPTIMIZED: Added | sample 20 before expensive rex extraction
   # -------------------------------------------------------------------------
   run_app_search \
-    "search index=_audit action=search info=granted app=\"$app\" | rex field=search \"index\\s*=\\s*(?<idx>[\\w\\*_-]+)\" | stats count as query_count, dc(user) as unique_users by idx | where isnotnull(idx) | sort - query_count | head 50" \
+    "index=_audit action=search app=\"$app\" earliest=-${USAGE_PERIOD} | sample 20 | rex field=search \"index\\s*=\\s*(?<idx>[\\w\\*_-]+)\" | stats count as sample_count, dc(user) as unique_users by idx | eval estimated_query_count=sample_count*20 | where isnotnull(idx) | sort -estimated_query_count | head 50" \
     "$analysis_dir/index_references.json" \
     "Index references for $app"
 
   # -------------------------------------------------------------------------
   # 5. SOURCETYPE REFERENCES - Which sourcetypes does THIS app query?
+  # OPTIMIZED: Added | sample 20 before expensive rex extraction
   # -------------------------------------------------------------------------
   run_app_search \
-    "search index=_audit action=search info=granted app=\"$app\" | rex field=search \"sourcetype\\s*=\\s*(?<st>[\\w\\*_-]+)\" | stats count as query_count by st | where isnotnull(st) | sort - query_count | head 50" \
+    "index=_audit action=search app=\"$app\" earliest=-${USAGE_PERIOD} | sample 20 | rex field=search \"sourcetype\\s*=\\s*(?<st>[\\w\\*_-]+)\" | stats count as sample_count by st | eval estimated_query_count=sample_count*20 | where isnotnull(st) | sort -estimated_query_count | head 50" \
     "$analysis_dir/sourcetype_references.json" \
     "Sourcetype references for $app"
 
   # -------------------------------------------------------------------------
-  # 6. DASHBOARDS NEVER VIEWED - Candidates for elimination in THIS app
+  # 6a. DASHBOARD VIEW COUNTS - Simpler query for this app (Curator correlates later)
+  # OPTIMIZED: Provides reliable data for Curator app to compute "never viewed"
   # -------------------------------------------------------------------------
   run_app_search \
-    "search index=_audit action=search info=granted search_type=dashboard app=\"$app\" | stats count by dashboard | append [| rest /servicesNS/-/$app/data/ui/views | table title | rename title as dashboard | eval count=0] | stats sum(count) as total_views by dashboard | where total_views=0 | table dashboard" \
+    "index=_audit action=search search_type=dashboard app=\"$app\" earliest=-${USAGE_PERIOD} user!=splunk-system-user savedsearch_name=* | stats count as views by savedsearch_name | rename savedsearch_name as dashboard" \
+    "$analysis_dir/dashboard_view_counts.json" \
+    "Dashboard view counts for $app"
+
+  # -------------------------------------------------------------------------
+  # 6b. DASHBOARDS NEVER VIEWED - Legacy query (uses | rest + | append)
+  # Note: Kept for compatibility. Curator app can also compute this from view_counts + manifest
+  # -------------------------------------------------------------------------
+  run_app_search \
+    "index=_audit action=search search_type=dashboard app=\"$app\" earliest=-${USAGE_PERIOD} | stats count by dashboard | append [| rest /servicesNS/-/$app/data/ui/views | table title | rename title as dashboard | eval count=0] | stats sum(count) as total_views by dashboard | where total_views=0 | table dashboard" \
     "$analysis_dir/dashboards_never_viewed.json" \
     "Never-viewed dashboards for $app"
 
@@ -4270,26 +4413,30 @@ collect_usage_analytics() {
   info "Collecting user activity metrics..."
 
   # Most active users (filtered to selected apps in scoped mode)
+  # OPTIMIZED: Moved user filter to search-time, changed latest() to max()
   run_usage_search \
-    "search index=_audit action=search info=granted ${app_search_filter}| stats count as search_count, dc(search) as unique_searches, latest(_time) as last_active by user | sort - search_count | head 50" \
+    "index=_audit action=search ${app_search_filter}earliest=-${USAGE_PERIOD} user!=splunk-system-user | stats count as search_count, dc(search) as unique_searches, max(_time) as last_active by user | sort -search_count | head 50" \
     "$EXPORT_DIR/dynabridge_analytics/usage_analytics/users_most_active.json" \
     "Most active users"
 
   # User activity by role
+  # OPTIMIZED: Moved filter to search-time
   run_usage_search \
-    "search index=_audit action=search info=granted ${app_search_filter}| stats count as searches, dc(user) as users by roles | sort - searches" \
+    "index=_audit action=search ${app_search_filter}earliest=-${USAGE_PERIOD} | stats count as searches, dc(user) as users by roles | sort -searches" \
     "$EXPORT_DIR/dynabridge_analytics/usage_analytics/activity_by_role.json" \
     "Activity by role"
 
   # Inactive users (no activity in period)
+  # OPTIMIZED: Moved filter to search-time, changed latest() to max()
   run_usage_search \
-    "search index=_audit action=search info=granted ${app_search_filter}| stats latest(_time) as last_active by user | where last_active < relative_time(now(), \"-30d\") | table user, last_active" \
+    "index=_audit action=search ${app_search_filter}earliest=-${USAGE_PERIOD} | stats max(_time) as last_active by user | where last_active < relative_time(now(), \"-30d\") | table user, last_active" \
     "$EXPORT_DIR/dynabridge_analytics/usage_analytics/users_inactive.json" \
     "Inactive users"
 
   # User sessions per day
+  # OPTIMIZED: Moved filter to search-time
   run_usage_search \
-    "search index=_audit action=search info=granted ${app_search_filter}| timechart span=1d dc(user) as active_users" \
+    "index=_audit action=search ${app_search_filter}earliest=-${USAGE_PERIOD} user!=splunk-system-user | timechart span=1d dc(user) as active_users" \
     "$EXPORT_DIR/dynabridge_analytics/usage_analytics/daily_active_users.json" \
     "Daily active users"
 
@@ -4306,14 +4453,16 @@ collect_usage_analytics() {
   info "Collecting data source usage patterns..."
 
   # Sourcetypes actually searched (vs configured)
+  # OPTIMIZED: Added | sample 20 before expensive rex extraction
   run_usage_search \
-    'search index=_audit action=search info=granted search=* | rex field=search "sourcetype=(?<searched_sourcetype>[\w:_-]+)" | stats count as search_count, dc(user) as users by searched_sourcetype | sort - search_count | head 50' \
+    'index=_audit action=search earliest=-${USAGE_PERIOD} | sample 20 | rex field=search "sourcetype=(?<searched_sourcetype>[\w:_-]+)" | stats count as sample_count, dc(user) as users by searched_sourcetype | eval estimated_count=sample_count*20 | sort -estimated_count | head 50' \
     "$EXPORT_DIR/dynabridge_analytics/usage_analytics/sourcetypes_searched.json" \
     "Most searched sourcetypes"
 
   # Index usage (which indexes are actually queried)
+  # OPTIMIZED: Added | sample 20 before expensive rex extraction
   run_usage_search \
-    'search index=_audit action=search info=granted search=* | rex field=search "index=(?<queried_index>[\w_-]+)" | stats count as query_count, dc(user) as users by queried_index | sort - query_count' \
+    'index=_audit action=search earliest=-${USAGE_PERIOD} | sample 20 | rex field=search "index=(?<queried_index>[\w_-]+)" | stats count as sample_count, dc(user) as users by queried_index | eval estimated_count=sample_count*20 | sort -estimated_count' \
     "$EXPORT_DIR/dynabridge_analytics/usage_analytics/indexes_queried.json" \
     "Indexes actually queried"
 
@@ -4664,8 +4813,9 @@ collect_usage_analytics() {
     > "$EXPORT_DIR/dynabridge_analytics/usage_analytics/kvstore_stats.json" 2>/dev/null
 
   # Scheduler load over time
+  # OPTIMIZED: Added | fields early to reduce memory usage
   run_usage_search \
-    'search index=_internal sourcetype=scheduler | timechart span=1h count as scheduled_searches, avg(run_time) as avg_runtime' \
+    'index=_internal sourcetype=scheduler earliest=-${USAGE_PERIOD} | fields _time, run_time | timechart span=1h count as scheduled_searches, avg(run_time) as avg_runtime' \
     "$EXPORT_DIR/dynabridge_analytics/usage_analytics/scheduler_load.json" \
     "Scheduler load over time"
 
@@ -5933,16 +6083,25 @@ ANON_EOF
 # =============================================================================
 
 create_archive() {
-  # Finalize resilience tracking before archive creation
-  finalize_progress "completed"
+  # Usage: create_archive [keep_dir] [suffix]
+  # keep_dir: if "true", don't delete EXPORT_DIR after archiving (for masked workflow)
+  # suffix: optional suffix like "_masked" to add to archive name
+  local keep_dir="${1:-false}"
+  local suffix="${2:-}"
 
-  # Phase 3: Show export timing statistics
-  show_export_timing_stats >&2
+  # Finalize resilience tracking before archive creation (only on first call)
+  if [ "$keep_dir" != "true" ]; then
+    finalize_progress "completed"
+    # Phase 3: Show export timing statistics
+    show_export_timing_stats >&2
+  fi
 
   # All status messages go to stderr so only the tarball path goes to stdout
-  print_info_box "STEP 8: CREATING ARCHIVE" \
-    "" \
-    "${WHITE}Compressing all collected data into a single archive...${NC}" >&2
+  if [ -z "$suffix" ]; then
+    print_info_box "STEP 8: CREATING ARCHIVE" \
+      "" \
+      "${WHITE}Compressing all collected data into a single archive...${NC}" >&2
+  fi
 
   # Log Phase 1 resilience statistics
   log "Resilience stats: API calls=$STATS_API_CALLS, retries=$STATS_API_RETRIES, failures=$STATS_API_FAILURES, batches=$STATS_BATCHES_COMPLETED"
@@ -5951,9 +6110,9 @@ create_archive() {
   finalize_debug_log >&2
 
   echo "" >&2
-  progress "Creating compressed archive..." >&2
+  progress "Creating compressed archive${suffix:+ ($suffix)}..." >&2
 
-  local tarball="/tmp/${EXPORT_NAME}.tar.gz"
+  local tarball="/tmp/${EXPORT_NAME}${suffix}.tar.gz"
 
   # Create the archive
   tar -czf "$tarball" -C /tmp "$EXPORT_NAME" 2>/dev/null
@@ -5981,15 +6140,103 @@ create_archive() {
   success "Size: $size" >&2
 
   if [ -n "$checksum" ]; then
-    echo "$checksum  ${EXPORT_NAME}.tar.gz" > "${tarball}.sha256"
+    echo "$checksum  ${EXPORT_NAME}${suffix}.tar.gz" > "${tarball}.sha256"
     info "SHA256: $checksum" >&2
   fi
 
-  # Cleanup export directory
-  rm -rf "$EXPORT_DIR"
+  # Cleanup export directory only if not keeping
+  if [ "$keep_dir" != "true" ]; then
+    rm -rf "$EXPORT_DIR"
+  fi
 
   echo "" >&2
   # Only the tarball path goes to stdout (for capture)
+  echo "$tarball"
+}
+
+# =============================================================================
+# MASKED ARCHIVE CREATION (v4.2.3)
+# Creates an anonymized copy while preserving the original
+# =============================================================================
+
+create_masked_archive() {
+  local masked_dir="${EXPORT_DIR}_masked"
+  local masked_export_name="${EXPORT_NAME}_masked"
+
+  print_info_box "CREATING MASKED (ANONYMIZED) ARCHIVE" \
+    "" \
+    "${WHITE}The original archive has been preserved.${NC}" \
+    "${WHITE}Now creating a separate anonymized copy...${NC}" >&2
+
+  # Copy export directory to masked version
+  progress "Copying export directory for anonymization..." >&2
+  cp -r "$EXPORT_DIR" "$masked_dir"
+
+  if [ ! -d "$masked_dir" ]; then
+    error "Failed to create masked directory copy" >&2
+    return 1
+  fi
+
+  # Temporarily switch EXPORT_DIR for anonymization
+  # Note: masked_dir already has the correct _masked suffix since EXPORT_DIR=/tmp/EXPORT_NAME
+  local original_export_dir="$EXPORT_DIR"
+  local original_export_name="$EXPORT_NAME"
+  EXPORT_DIR="$masked_dir"
+  EXPORT_NAME="$masked_export_name"
+
+  # Run anonymization on the masked copy
+  anonymize_export
+
+  # Create the masked archive
+  progress "Creating masked archive..." >&2
+
+  local tarball="/tmp/${masked_export_name}.tar.gz"
+  tar -czf "$tarball" -C /tmp "$masked_export_name" 2>/dev/null
+
+  if [ ! -f "$tarball" ]; then
+    error "Failed to create masked archive" >&2
+    EXPORT_DIR="$original_export_dir"
+    EXPORT_NAME="$original_export_name"
+    rm -rf "$masked_dir"
+    return 1
+  fi
+
+  # Get size
+  local size=$(du -h "$tarball" | cut -f1)
+
+  # Generate checksum
+  local checksum=""
+  if command_exists sha256sum; then
+    checksum=$(sha256sum "$tarball" | cut -d' ' -f1)
+  elif command_exists shasum; then
+    checksum=$(shasum -a 256 "$tarball" | cut -d' ' -f1)
+  fi
+
+  # Set permissions
+  chmod 600 "$tarball"
+
+  success "Masked archive created: $tarball" >&2
+  success "Size: $size" >&2
+
+  if [ -n "$checksum" ]; then
+    echo "$checksum  ${masked_export_name}.tar.gz" > "${tarball}.sha256"
+    info "SHA256: $checksum" >&2
+  fi
+
+  # Clean up masked directory
+  rm -rf "$masked_dir"
+
+  echo "" >&2
+  echo -e "  ${YELLOW}Note:${NC} Share the ${BOLD}_masked${NC} archive with third parties." >&2
+  echo -e "        Keep the original archive for your records." >&2
+  echo "" >&2
+
+  # Restore original EXPORT_DIR/EXPORT_NAME and clean up original
+  EXPORT_DIR="$original_export_dir"
+  EXPORT_NAME="$original_export_name"
+  rm -rf "$EXPORT_DIR"
+
+  # Return the masked tarball path
   echo "$tarball"
 }
 
@@ -6211,6 +6458,7 @@ TROUBLESHOOT_GUIDES
 
 show_completion() {
   local tarball="$1"
+  local masked_tarball="${2:-}"  # Optional: masked archive path (v4.2.3)
 
   # Calculate total elapsed time
   EXPORT_END_TIME=$(date +%s)
@@ -6236,8 +6484,20 @@ show_completion() {
 EOF
   echo -e "${NC}"
 
-  echo -e "  ${WHITE}Export File:${NC} $tarball"
-  echo -e "  ${WHITE}Size:${NC}        $(du -h "$tarball" | cut -f1)"
+  # v4.2.3: Show both archives if masked version was created
+  if [ -n "$masked_tarball" ] && [ -f "$masked_tarball" ]; then
+    echo -e "  ${WHITE}Original Archive:${NC}  $tarball"
+    echo -e "  ${WHITE}                     Size: $(du -h "$tarball" | cut -f1)${NC}"
+    echo ""
+    echo -e "  ${CYAN}Masked Archive:${NC}    $masked_tarball"
+    echo -e "  ${CYAN}                     Size: $(du -h "$masked_tarball" | cut -f1)${NC}"
+    echo ""
+    echo -e "  ${YELLOW}→ Share the _masked archive with third parties${NC}"
+    echo -e "  ${YELLOW}→ Keep the original archive for your records${NC}"
+  else
+    echo -e "  ${WHITE}Export File:${NC} $tarball"
+    echo -e "  ${WHITE}Size:${NC}        $(du -h "$tarball" | cut -f1)"
+  fi
   echo -e "  ${WHITE}Duration:${NC}    ${elapsed_str}"
   echo ""
 
@@ -6589,6 +6849,12 @@ main() {
 
   collect_system_info
 
+  # Collect system-level macros (global macros from etc/system/local)
+  # This captures macros that are automatically available to all apps
+  if [ "$COLLECT_CONFIGS" = true ]; then
+    collect_system_macros
+  fi
+
   if [ "$COLLECT_CONFIGS" = true ]; then
     # Initialize progress for app collection (same style as Dashboard Studio export)
     progress_init "Exporting Application Configurations" "$total_apps"
@@ -6680,15 +6946,26 @@ main() {
     generate_troubleshooting_report
   fi
 
-  # Anonymize data if requested (before creating archive)
-  anonymize_export
-
-  # Create archive
+  # v4.2.3: Two-archive approach for anonymization
+  # Always create original archive first (untouched), then create masked copy if needed
   local tarball
-  tarball=$(create_archive)
+  if [ "$ANONYMIZE_DATA" = true ]; then
+    # Create original archive first, keeping EXPORT_DIR for masked copy
+    tarball=$(create_archive "true")  # keep_dir=true
 
-  # Show completion
-  show_completion "$tarball"
+    # Create masked (anonymized) archive from a copy
+    local masked_tarball
+    masked_tarball=$(create_masked_archive)
+
+    # Show completion with both archives
+    show_completion "$tarball" "$masked_tarball"
+  else
+    # No anonymization - just create single archive
+    tarball=$(create_archive)
+
+    # Show completion
+    show_completion "$tarball"
+  fi
 }
 
 # Run main
