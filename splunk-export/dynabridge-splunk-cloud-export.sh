@@ -1875,6 +1875,16 @@ get_splunk_stack() {
   SPLUNK_URL="https://${SPLUNK_STACK}:8089"
 
   echo ""
+  echo -e "  ${GREEN}✓${NC} Stack URL configured: ${BOLD}$SPLUNK_URL${NC}"
+
+  print_box_footer
+}
+
+# =============================================================================
+# STEP 1.5: CONNECTION TEST (after proxy is configured)
+# =============================================================================
+
+test_splunk_connection() {
   progress "Testing connection to $SPLUNK_URL..."
 
   if ! test_connectivity "$SPLUNK_URL"; then
@@ -1890,10 +1900,14 @@ get_splunk_stack() {
       "" \
       "To check your public IP: ${GREEN}curl ifconfig.me${NC}"
 
+    if [ -n "$PROXY_URL" ]; then
+      echo ""
+      echo -e "  ${YELLOW}NOTE: Proxy is configured (${PROXY_URL})${NC}"
+      echo -e "  ${YELLOW}Verify the proxy URL is correct and allows HTTPS traffic to Splunk Cloud.${NC}"
+    fi
+
     exit 1
   fi
-
-  print_box_footer
 }
 
 # =============================================================================
@@ -2273,6 +2287,13 @@ select_applications() {
   esac
 
   STATS_APPS=${#SELECTED_APPS[@]}
+
+  if [ "$STATS_APPS" -eq 0 ]; then
+    error "No applications found or selected! Cannot proceed."
+    error "  This may indicate a permissions issue with your credentials."
+    error "  Try running with --debug for more details."
+    exit 1
+  fi
 
   print_box_footer
 }
@@ -5602,13 +5623,20 @@ main() {
     fi
 
     STATS_APPS=${#SELECTED_APPS[@]}
+    if [ "$STATS_APPS" -eq 0 ]; then
+      error "No applications found! Cannot proceed with empty app list."
+      error "  Check that your credentials have permission to list apps."
+      error "  Try running with --debug for more details."
+      exit 1
+    fi
     info "Will export ${STATS_APPS} app(s)"
   else
     # Interactive mode - prompts allowed
     show_introduction
     get_splunk_stack
-    get_authentication
     get_proxy_settings
+    test_splunk_connection
+    get_authentication
     detect_environment
     select_applications
     select_data_categories
