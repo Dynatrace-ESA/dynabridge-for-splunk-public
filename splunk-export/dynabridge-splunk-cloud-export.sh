@@ -2195,6 +2195,37 @@ except:
 " 2>/dev/null)
   fi
 
+  # Debug: if no apps were parsed, show diagnostic info
+  if [ ${#apps[@]} -eq 0 ]; then
+    warning "API returned data but no apps were parsed"
+    local response_size=${#apps_response}
+    warning "  Response size: ${response_size} bytes"
+    if [ "$response_size" -gt 0 ]; then
+      warning "  Response preview (first 500 chars):"
+      echo "$apps_response" | head -c 500
+      echo ""
+      warning "  Checking response format..."
+      echo "$apps_response" | $PYTHON_CMD -c "
+import json, sys
+try:
+    data = json.load(sys.stdin)
+    print('  JSON valid: yes')
+    print('  Top-level keys: ' + ', '.join(data.keys()) if isinstance(data, dict) else '  Not a dict')
+    entries = data.get('entry', [])
+    print('  entry count: ' + str(len(entries) if isinstance(entries, list) else 'not a list'))
+    if isinstance(entries, list) and len(entries) > 0:
+        print('  First entry keys: ' + ', '.join(entries[0].keys() if isinstance(entries[0], dict) else ['not a dict']))
+except Exception as e:
+    print('  JSON parse error: ' + str(e))
+" 2>/dev/null
+      echo ""
+    else
+      warning "  Response is EMPTY - API returned no data"
+    fi
+  fi
+
+  debug_log "APP_SELECT" "Parsed ${#apps[@]} apps from API response (before filtering)"
+
   # Filter out Splunk internal/system apps (users don't want to migrate these)
   local filtered_apps=()
   local filtered_labels=()
