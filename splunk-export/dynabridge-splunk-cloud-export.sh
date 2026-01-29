@@ -1975,8 +1975,7 @@ get_authentication() {
     else
       AUTH_METHOD="token"
       echo -ne "  ${YELLOW}Enter API token: ${NC}"
-      read -rs AUTH_TOKEN
-      echo ""
+      read -r AUTH_TOKEN
     fi
   fi
 
