@@ -1650,9 +1650,17 @@ check_capabilities() {
     return 1
   fi
 
-  # Extract capabilities using Python
+  # Extract capabilities - pipe through stdin to handle large responses
   local capabilities=""
-  capabilities=$(json_array "$response" ".entry[0].content.capabilities" | tr '\n' ', ')
+  capabilities=$(echo "$response" | $PYTHON_CMD -c "
+import json, sys
+try:
+    data = json.load(sys.stdin)
+    caps = data.get('entry', [{}])[0].get('content', {}).get('capabilities', [])
+    print(','.join(caps) if isinstance(caps, list) else '')
+except:
+    print('')
+" 2>/dev/null)
 
   local required_caps=("admin_all_objects" "list_users" "search")
   local missing_caps=()
@@ -2075,17 +2083,33 @@ detect_environment() {
     CLOUD_TYPE="classic_or_victoria"
   fi
 
-  # Get app count using Python JSON parsing
+  # Get app count - pipe through stdin to handle large responses
   local apps_response
   apps_response=$(api_call "/services/apps/local" "GET" "output_mode=json&count=0")
   local app_count=0
-  app_count=$(json_value "$apps_response" ".entry" | $PYTHON_CMD -c "import json,sys; data=json.loads(sys.stdin.read()); print(len(data) if isinstance(data, list) else 0)" 2>/dev/null || echo "0")
+  app_count=$(echo "$apps_response" | $PYTHON_CMD -c "
+import json, sys
+try:
+    data = json.load(sys.stdin)
+    entries = data.get('entry', [])
+    print(len(entries) if isinstance(entries, list) else 0)
+except:
+    print(0)
+" 2>/dev/null || echo "0")
 
-  # Get user count using Python JSON parsing
+  # Get user count - pipe through stdin to handle large responses
   local users_response
   users_response=$(api_call "/services/authentication/users" "GET" "output_mode=json&count=0")
   local user_count=0
-  user_count=$(json_value "$users_response" ".entry" | $PYTHON_CMD -c "import json,sys; data=json.loads(sys.stdin.read()); print(len(data) if isinstance(data, list) else 0)" 2>/dev/null || echo "0")
+  user_count=$(echo "$users_response" | $PYTHON_CMD -c "
+import json, sys
+try:
+    data = json.load(sys.stdin)
+    entries = data.get('entry', [])
+    print(len(entries) if isinstance(entries, list) else 0)
+except:
+    print(0)
+" 2>/dev/null || echo "0")
 
   echo ""
   echo -e "  ┌────────────────────────────────────────────────────────────────────┐"
@@ -2160,7 +2184,15 @@ select_applications() {
     while IFS= read -r line; do
       apps+=("$line")
       app_labels+=("$line")
-    done < <(echo "$apps_response" | grep -oP '"name"\s*:\s*"\K[^"]+')
+    done < <(echo "$apps_response" | $PYTHON_CMD -c "
+import json, sys
+try:
+    data = json.load(sys.stdin)
+    for entry in data.get('entry', []):
+        print(entry.get('name', ''))
+except:
+    pass
+" 2>/dev/null)
   fi
 
   # Filter out Splunk internal/system apps (users don't want to migrate these)
@@ -5621,7 +5653,15 @@ main() {
       else
         while IFS= read -r line; do
           SELECTED_APPS+=("$line")
-        done < <(echo "$apps_response" | grep -oP '"name"\s*:\s*"\K[^"]+')
+        done < <(echo "$apps_response" | $PYTHON_CMD -c "
+import json, sys
+try:
+    data = json.load(sys.stdin)
+    for entry in data.get('entry', []):
+        print(entry.get('name', ''))
+except:
+    pass
+" 2>/dev/null)
       fi
 
       # Show count and additional warning if large
