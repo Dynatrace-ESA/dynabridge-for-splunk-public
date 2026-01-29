@@ -795,13 +795,13 @@ json_value() {
   local json="$1"
   local path="$2"
 
-  $PYTHON_CMD -c "
+  echo "$json" | $PYTHON_CMD -c "
 import json
 import sys
 
 try:
-    data = json.loads('''$json''')
-    path = '''$path'''.strip()
+    data = json.load(sys.stdin)
+    path = sys.argv[1].strip()
     if path.startswith('.'):
         path = path[1:]
 
@@ -825,7 +825,7 @@ try:
         print(result)
 except Exception as e:
     print('')
-" 2>/dev/null
+" "$path" 2>/dev/null
 }
 
 # Get a value from a JSON file
@@ -1204,7 +1204,7 @@ api_call_paginated() {
     return 1
   fi
 
-  total=$(echo "$count_response" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('paging',{}).get('total',0))" 2>/dev/null || echo "0")
+  total=$(echo "$count_response" | $PYTHON_CMD -c "import sys,json; d=json.load(sys.stdin); print(d.get('paging',{}).get('total',0))" 2>/dev/null || echo "0")
 
   if [ "$total" = "0" ]; then
     info "No $category found"
@@ -1229,7 +1229,7 @@ api_call_paginated() {
 
     echo "$batch_response" > "$batch_file"
 
-    local batch_count=$(echo "$batch_response" | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d.get('entry',[])))" 2>/dev/null || echo "0")
+    local batch_count=$(echo "$batch_response" | $PYTHON_CMD -c "import sys,json; d=json.load(sys.stdin); print(len(d.get('entry',[])))" 2>/dev/null || echo "0")
     fetched=$((fetched + batch_count))
 
     # Progress update
@@ -1263,7 +1263,7 @@ merge_batch_files() {
   info "Merging batch files for $category..."
 
   # Use Python to merge JSON arrays efficiently
-  python3 << EOF
+  $PYTHON_CMD << EOF
 import json
 import glob
 import os
@@ -1341,8 +1341,8 @@ load_checkpoint() {
     return 1
   fi
 
-  local checkpoint_time=$(python3 -c "import json; print(json.load(open('$CHECKPOINT_FILE')).get('timestamp',''))" 2>/dev/null)
-  local checkpoint_category=$(python3 -c "import json; print(json.load(open('$CHECKPOINT_FILE')).get('category',''))" 2>/dev/null)
+  local checkpoint_time=$($PYTHON_CMD -c "import json; print(json.load(open('$CHECKPOINT_FILE')).get('timestamp',''))" 2>/dev/null)
+  local checkpoint_category=$($PYTHON_CMD -c "import json; print(json.load(open('$CHECKPOINT_FILE')).get('category',''))" 2>/dev/null)
 
   if [ -n "$checkpoint_time" ]; then
     echo ""
@@ -1626,7 +1626,7 @@ authenticate() {
       SESSION_KEY=$(json_value "$response" '.sessionKey')
       if [ -z "$SESSION_KEY" ]; then
         # Try alternate parsing
-        SESSION_KEY=$(echo "$response" | grep -oP '(?<=<sessionKey>)[^<]+')
+        SESSION_KEY=$(echo "$response" | sed -n 's/.*<sessionKey>\([^<]*\)<.*/\1/p')
       fi
 
       if [ -n "$SESSION_KEY" ]; then
@@ -2619,7 +2619,15 @@ collect_dashboards() {
       else
         # Fallback: extract names but may include inherited dashboards
         # The API search parameter should have already filtered them
-        names=$(echo "$app_dashboards" | grep -oP '"name"\s*:\s*"\K[^"]+')
+        names=$(echo "$app_dashboards" | $PYTHON_CMD -c "
+import json, sys
+try:
+    data = json.load(sys.stdin)
+    for e in data.get('entry', []):
+        print(e.get('name', ''))
+except:
+    pass
+" 2>/dev/null)
       fi
 
       local dash_count=$(echo "$names" | grep -c . 2>/dev/null || echo "0")
@@ -2662,7 +2670,15 @@ collect_dashboards() {
 
             # Also check if eai:data starts with { (direct JSON format)
             local eai_data_start=""
-            eai_data_start=$(echo "$dash_detail" | grep -oP '"eai:data"\s*:\s*"\K.' 2>/dev/null | head -1)
+            eai_data_start=$(echo "$dash_detail" | $PYTHON_CMD -c "
+import json, sys
+try:
+    data = json.load(sys.stdin)
+    eai = data.get('entry', [{}])[0].get('content', {}).get('eai:data', '')
+    print(eai[0] if eai else '')
+except:
+    print('')
+" 2>/dev/null)
             if [ "$eai_data_start" = "{" ]; then
               is_studio=true
               has_json_definition=true
@@ -2678,7 +2694,7 @@ collect_dashboards() {
                 local definition_file="$EXPORT_DIR/$app/dashboards/studio/${name}_definition.json"
 
                 # Extract definition content using Python for reliable JSON/CDATA parsing
-                python3 -c "
+                $PYTHON_CMD -c "
 import json
 import re
 
@@ -2790,11 +2806,11 @@ collect_alerts() {
           )] | length' 2>/dev/null || echo 0)
           ((alert_count += app_alerts))
 
-          debug "  $app: $app_saved saved searches ($app_alerts alerts)"
+          debug_log "ALERTS" "  $app: $app_saved saved searches ($app_alerts alerts)"
         else
           # Fallback: save unfiltered if jq filtering fails
           echo "$response" > "$EXPORT_DIR/$app/savedsearches.json"
-          warn "Could not filter savedsearches for $app by ACL - saved unfiltered response"
+          warning "Could not filter savedsearches for $app by ACL - saved unfiltered response"
         fi
       else
         # Fallback without jq - save unfiltered response
@@ -3619,7 +3635,14 @@ EOF
   if $HAS_JQ; then
     sid=$(echo "$job_response" | jq -r '.sid // .entry[0].content.sid' 2>/dev/null)
   else
-    sid=$(echo "$job_response" | grep -oP '"sid"\s*:\s*"\K[^"]+' | head -1)
+    sid=$(echo "$job_response" | $PYTHON_CMD -c "
+import json, sys
+try:
+    data = json.load(sys.stdin)
+    print(data.get('sid', '') or data.get('entry', [{}])[0].get('content', {}).get('sid', ''))
+except:
+    print('')
+" 2>/dev/null)
   fi
 
   if [ -z "$sid" ] || [ "$sid" = "null" ]; then
@@ -3630,7 +3653,15 @@ EOF
     if $HAS_JQ; then
       error_msg=$(echo "$job_response" | jq -r '.messages[0].text // .entry[0].content.messages[0].text // "Unknown error"' 2>/dev/null)
     else
-      error_msg=$(echo "$job_response" | grep -oP '"text"\s*:\s*"\K[^"]+' | head -1)
+      error_msg=$(echo "$job_response" | $PYTHON_CMD -c "
+import json, sys
+try:
+    data = json.load(sys.stdin)
+    msgs = data.get('messages', []) or data.get('entry', [{}])[0].get('content', {}).get('messages', [])
+    print(msgs[0].get('text', 'Unknown error') if msgs else 'Unknown error')
+except:
+    print('Unknown error')
+" 2>/dev/null)
     fi
 
     cat > "$output_file" << EOF
@@ -3962,9 +3993,9 @@ collect_knowledge_objects() {
           local entry_count=$(echo "$filtered_response" | jq '.entry | length // 0' 2>/dev/null || echo 0)
           if [ "$entry_count" -gt 0 ]; then
             echo "$filtered_response" > "$output_file"
-            debug "  $target_app/$object_type: $entry_count entries (after filtering)"
+            debug_log "KNOWLEDGE" "  $target_app/$object_type: $entry_count entries (after filtering)"
           else
-            debug "  $target_app/$object_type: 0 entries belong to this app (skipped)"
+            debug_log "KNOWLEDGE" "  $target_app/$object_type: 0 entries belong to this app (skipped)"
           fi
           return 0
         fi
@@ -3972,7 +4003,7 @@ collect_knowledge_objects() {
 
       # Fallback without jq - save unfiltered and log warning
       echo "$json_data" > "$output_file"
-      warn "Could not filter $object_type for $target_app by ACL - saved unfiltered"
+      warning "Could not filter $object_type for $target_app by ACL - saved unfiltered"
       return 0
     }
 
@@ -4032,7 +4063,15 @@ collect_knowledge_objects() {
         if $HAS_JQ; then
           lookup_names=$(echo "$response" | jq -r '.entry[].name' 2>/dev/null)
         else
-          lookup_names=$(echo "$response" | grep -oP '"name"\s*:\s*"\K[^"]+')
+          lookup_names=$(echo "$response" | $PYTHON_CMD -c "
+import json, sys
+try:
+    data = json.load(sys.stdin)
+    for e in data.get('entry', []):
+        print(e.get('name', ''))
+except:
+    pass
+" 2>/dev/null)
         fi
 
         while IFS= read -r lookup; do
@@ -5163,8 +5202,8 @@ EOF
           error_type=$(jq -r '.error // "unknown"' "$json_file" 2>/dev/null)
           error_msg=$(jq -r '.message // "No message"' "$json_file" 2>/dev/null)
         else
-          error_type=$(grep -oP '"error"\s*:\s*"\K[^"]+' "$json_file" | head -1)
-          error_msg=$(grep -oP '"message"\s*:\s*"\K[^"]+' "$json_file" | head -1)
+          error_type=$($PYTHON_CMD -c "import json; data=json.load(open('$json_file')); print(data.get('error','unknown'))" 2>/dev/null || echo "unknown")
+          error_msg=$($PYTHON_CMD -c "import json; data=json.load(open('$json_file')); print(data.get('message','No message'))" 2>/dev/null || echo "No message")
         fi
 
         cat >> "$report_file" << EOF
@@ -5427,8 +5466,22 @@ main() {
     exit 1
   fi
 
-  # Note: Python 3 is now used for all JSON processing (v3.6.0+)
-  # No jq dependency required
+  # Detect Python command (python3 or python)
+  if command -v python3 &>/dev/null; then
+    PYTHON_CMD="python3"
+  elif command -v python &>/dev/null; then
+    PYTHON_CMD="python"
+  else
+    echo "Error: Python 3 is required but not installed."
+    echo "  Install Python 3: https://www.python.org/downloads/"
+    exit 1
+  fi
+
+  # Detect jq availability
+  HAS_JQ=false
+  if command -v jq &>/dev/null; then
+    HAS_JQ=true
+  fi
 
   # Parse command-line arguments for non-interactive mode
   while [[ $# -gt 0 ]]; do
