@@ -2,7 +2,7 @@
 
 ## Version 4.2.4 | Complete Data Collection Framework
 
-**Last Updated**: January 2026
+**Last Updated**: February 2026
 **Related Documents**: [Script-Generated Analytics Reference](SCRIPT-GENERATED-ANALYTICS-REFERENCE.md) | [Enterprise README](README-SPLUNK-ENTERPRISE.md) | [Export Schema](EXPORT-SCHEMA.md)
 
 ---
@@ -20,6 +20,8 @@ This specification defines the complete requirements for a Splunk data collectio
 - **Ownership & RBAC**: Users, groups, roles, capabilities, object ownership
 - **Usage Analytics**: Query frequency, dashboard views, alert triggers, index volume trends
 - **Migration Prioritization**: Scoring of high-value assets worth migrating
+
+> **Note**: For Splunk Cloud environments, dedicated Cloud export scripts are available: `dynabridge-splunk-cloud-export.sh` (Bash) and `dynabridge-splunk-cloud-export.ps1` (PowerShell). See [README-SPLUNK-CLOUD.md](README-SPLUNK-CLOUD.md) for details.
 
 ---
 
@@ -88,11 +90,11 @@ This preserves the original data in case anonymization corrupts files. Users can
 
 ### Enterprise-Ready Defaults
 - **Zero-configuration reliability**: Defaults tuned for environments with 4000+ dashboards and 10K+ alerts
-- **Extended timeouts**: `API_TIMEOUT=120s`, `MAX_TOTAL_TIME=14400s` (4 hours), search `max_wait=300s`
+- **Extended timeouts**: `API_TIMEOUT=120s`, `MAX_TOTAL_TIME=43200s` (12 hours), search `max_wait=300s`
 - **Optimized rate limiting**: `RATE_LIMIT_DELAY=0.1s` - fast but polite API calls
 
 ### Enterprise Resilience Features
-- **Paginated API calls**: `splunk_api_call_paginated` with configurable `BATCH_SIZE` (default: 100)
+- **Paginated API calls**: `splunk_api_call_paginated` with configurable `BATCH_SIZE` (default: 250)
 - **Checkpoint/resume**: Automatic detection of incomplete exports with resume capability
 - **SHC Captain detection**: Warning when running on Search Head Cluster Captain
 - **Export timing statistics**: Detailed timing report at completion

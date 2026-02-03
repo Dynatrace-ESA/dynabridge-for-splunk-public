@@ -1,8 +1,13 @@
-# DynaBridge Splunk Export Schema v4.0
+# DynaBridge Splunk Export Schema v4.3
 
 ## Purpose
 
 This document defines the **guaranteed output schema** for all DynaBridge Splunk exports. Regardless of Splunk environment size, version, or deployment type, exports MUST conform to this schema so DynaBridge can reliably parse them.
+
+> **Applies to all three export scripts:**
+> - `dynabridge-splunk-export.sh` (Enterprise, Bash)
+> - `dynabridge-splunk-cloud-export.sh` (Cloud, Bash)
+> - `dynabridge-splunk-cloud-export.ps1` (Cloud, PowerShell)
 
 ---
 

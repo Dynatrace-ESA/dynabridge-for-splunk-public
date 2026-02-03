@@ -2,8 +2,8 @@
 ## READ THIS FIRST - Complete Prerequisites Guide
 
 **Version**: 4.2.4
-**Last Updated**: January 2026
-**Related Documents**: [Script-Generated Analytics Reference](SCRIPT-GENERATED-ANALYTICS-REFERENCE.md) | [Enterprise Export Specification](SPLUNK-ENTERPRISE-EXPORT-SPECIFICATION.md) | [Export Improvement Analysis](EXPORT-IMPROVEMENT-ANALYSIS.md)
+**Last Updated**: February 2026
+**Related Documents**: [Script-Generated Analytics Reference](SCRIPT-GENERATED-ANALYTICS-REFERENCE.md) | [Enterprise Export Specification](SPLUNK-ENTERPRISE-EXPORT-SPECIFICATION.md) | [Export Improvement Analysis](EXPORT-IMPROVEMENT-ANALYSIS.md) | For Splunk Cloud exports, see [Cloud Export README](README-SPLUNK-CLOUD.md)
 
 ### What's New in v4.2.4
 
@@ -107,14 +107,15 @@ Supported architectures:
 
 **Splunk Cloud does NOT allow SSH access** to the underlying infrastructure.
 
-For Splunk Cloud migrations, you need:
-1. **REST API-only export** (different script - contact DynaBridge team)
-2. **Splunk Cloud admin credentials** with appropriate permissions
-3. **Network access** to `https://your-stack.splunkcloud.com:8089`
+For Splunk Cloud migrations, use the dedicated Cloud export scripts:
+- **`dynabridge-splunk-cloud-export.sh`** -- Bash script for Linux/macOS
+- **`dynabridge-splunk-cloud-export.ps1`** -- PowerShell script for Windows
 
-If you're migrating from Splunk Cloud, please contact the DynaBridge team for:
-- Splunk Cloud-specific export script
-- Guidance on Cloud-to-Dynatrace migration patterns
+These scripts operate 100% via REST API and require:
+1. **Splunk Cloud admin credentials** or API token with appropriate permissions
+2. **Network access** to `https://your-stack.splunkcloud.com:8089`
+
+See **[README-SPLUNK-CLOUD.md](README-SPLUNK-CLOUD.md)** for full prerequisites, usage instructions, and parameter reference.
 
 ---
 
@@ -534,7 +535,7 @@ $SPLUNK_HOME/bin/splunk show shcluster-status -auth admin:password
 
 ### 4.8 Splunk Cloud (Classic & Victoria Experience)
 
-**⚠️ NOT CURRENTLY SUPPORTED BY THIS SCRIPT**
+**⚠️ NOT SUPPORTED BY THIS ENTERPRISE SCRIPT -- USE THE CLOUD EXPORT SCRIPTS**
 
 **Description**: Splunk-managed SaaS deployment
 
@@ -558,15 +559,13 @@ $SPLUNK_HOME/bin/splunk show shcluster-status -auth admin:password
 │  │                                                       │   │
 │  └──────────────────────────────────────────────────────┘   │
 │                                                              │
-│  FOR SPLUNK CLOUD MIGRATIONS:                               │
+│  FOR SPLUNK CLOUD MIGRATIONS, USE:                          │
 │                                                              │
-│  Contact the DynaBridge team for:                           │
-│  • Splunk Cloud REST API-only export script                 │
-│  • Cloud-specific migration guidance                        │
-│  • Hybrid (Cloud + On-prem) migration patterns              │
+│  • dynabridge-splunk-cloud-export.sh (Bash - Linux/macOS)  │
+│  • dynabridge-splunk-cloud-export.ps1  (PowerShell - Windows)│
 │                                                              │
-│  A future version may include --cloud mode for REST-only    │
-│  collection from Splunk Cloud environments.                 │
+│  Both scripts operate 100% via REST API.                    │
+│  See README-SPLUNK-CLOUD.md for full documentation.         │
 │                                                              │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -575,7 +574,8 @@ $SPLUNK_HOME/bin/splunk show shcluster-status -auth admin:password
 |-------------|---------|
 | **Server Access** | ❌ Not possible - No SSH to Splunk Cloud |
 | **This Script** | ❌ Not supported |
-| **Alternative** | Contact DynaBridge team for Cloud export tool |
+| **Alternative (Bash)** | `dynabridge-splunk-cloud-export.sh` -- see [README-SPLUNK-CLOUD.md](README-SPLUNK-CLOUD.md) |
+| **Alternative (PowerShell)** | `dynabridge-splunk-cloud-export.ps1` -- see [README-SPLUNK-CLOUD.md](README-SPLUNK-CLOUD.md) |
 
 ---
 
@@ -943,9 +943,9 @@ This ensures your export can be safely shared with consultants or support teams.
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `BATCH_SIZE` | 100 | Items per API request |
+| `BATCH_SIZE` | 250 | Items per API request |
 | `API_TIMEOUT` | 120s | Per-request timeout (2 min) |
-| `MAX_TOTAL_TIME` | 14400s | Max runtime (4 hours) |
+| `MAX_TOTAL_TIME` | 43200s | Max runtime (12 hours) |
 | `MAX_RETRIES` | 3 | Retry attempts with exponential backoff |
 | `RATE_LIMIT_DELAY` | 0.1s | Delay between API calls (100ms) |
 | `CHECKPOINT_ENABLED` | true | Enable checkpoint/resume capability |
@@ -1118,7 +1118,7 @@ bash dynabridge-splunk-export.sh
 
 ```
 Is it Splunk Cloud?
-  └─ YES → ❌ This script not supported. Contact DynaBridge team.
+  └─ YES → ❌ This script not supported. Use Cloud scripts (see README-SPLUNK-CLOUD.md).
   └─ NO  → Is it a distributed environment?
              └─ YES → Run on Search Head (or SHC Captain)
              └─ NO  → Run on the standalone Splunk server
@@ -1135,7 +1135,7 @@ Is it Splunk Cloud?
 | With Deployment Server | SH + optionally DS | `splunk` | Admin | DS for forwarder configs |
 | Universal Forwarder | ❌ Don't run here | - | - | Use Deployment Server instead |
 | Heavy Forwarder | ❌ Don't run here | - | - | Use Deployment Server instead |
-| Splunk Cloud | ❌ Not supported | - | - | Different script needed |
+| Splunk Cloud | ❌ Not supported | - | - | Use Cloud scripts (see README-SPLUNK-CLOUD.md) |
 
 ### One-Liner Access Test
 

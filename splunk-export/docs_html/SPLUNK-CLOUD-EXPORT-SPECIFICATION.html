@@ -267,14 +267,45 @@
 
     <main class="content">
 <h1>DynaBridge Splunk Cloud Export Script - Technical Specification</h1>
-<h2>Version 4.2.4 | REST API-Only Data Collection for Splunk Cloud</h2>
+<h2>Version 4.3.0 | REST API-Only Data Collection for Splunk Cloud</h2>
 <p>
-<strong>Last Updated</strong>: January 2026
+<strong>Last Updated</strong>: February 2026
 <strong>Related Documents</strong>: <a href="SCRIPT-GENERATED-ANALYTICS-REFERENCE.md">Script-Generated Analytics Reference</a> | <a href="README-SPLUNK-CLOUD.md">Cloud README</a> | <a href="EXPORT-SCHEMA.md">Export Schema</a>
 </p>
 <hr>
 <blockquote><p><strong>Developed for Dynatrace One by Enterprise Solutions & Architecture</strong></p></blockquote>
 <blockquote><p><em>An ACE Services Division of Dynatrace</em></p></blockquote>
+<hr>
+<h2>What's New in v4.3.0</h2>
+<h3>Resume Collection (<code>--resume-collect</code> / <code>-ResumeCollect</code>)</h3>
+<p>
+Resume from a previous export archive to fill gaps without re-collecting everything:
+</p>
+<ul>
+<li>Extracts previous <code>.tar.gz</code>, detects already-collected data, and fills gaps</li>
+<li>Versioned output with <code>-v1</code>, <code>-v2</code> suffixes to preserve prior exports</li>
+<li>Bash 4.2+ compatible with full POSIX compliance</li>
+<li><strong>Per-app skip logic</strong>: Skips dashboards, alerts, and knowledge objects for apps that were already fully collected</li>
+<li><strong>Global skip logic</strong>: Skips configs, RBAC, usage analytics, and indexes if already present in the previous archive</li>
+</ul>
+<pre><code class="language-bash"># Resume from a previous export
+./dynabridge-splunk-cloud-export.sh --resume-collect dynabridge_cloud_export_acme_20260115.tar.gz
+
+# PowerShell equivalent
+.\dynabridge-splunk-cloud-export.ps1 -ResumeCollect dynabridge_cloud_export_acme_20260115.tar.gz</code></pre>
+<h3>12-Hour Max Runtime</h3>
+<ul>
+<li><code>MAX<em>TOTAL</em>TIME=43200</code> (43,200 seconds = 12 hours) enforced across all scripts</li>
+<li>Prevents runaway exports on very large Splunk Cloud environments</li>
+<li>Graceful shutdown with partial archive creation when time limit is reached</li>
+</ul>
+<h3>PowerShell Edition</h3>
+<ul>
+<li><strong><code>dynabridge-splunk-cloud-export.ps1</code></strong> v4.3.0 provides identical functionality for Windows environments</li>
+<li>Zero external dependencies (no Python, no curl, no jq required)</li>
+<li>Supports PowerShell 5.1+ (Windows PowerShell) and PowerShell 7+ (cross-platform)</li>
+<li>See the <a href="#powershell-edition">PowerShell Edition</a> section below for full parameter mapping</li>
+</ul>
 <hr>
 <h2>What's New in v4.2.4</h2>
 <h3>Two-Archive Anonymization (Preserves Original Data)</h3>
@@ -360,7 +391,7 @@ The Cloud script now has <strong>full feature parity</strong> with the Enterpris
 </p>
 <ul>
 <li><strong>Paginated API calls</strong>: <code>api<em>call</em>paginated()</code> with configurable <code>BATCH_SIZE</code> (default: 100)</li>
-<li><strong>Extended timeouts</strong>: <code>API<em>TIMEOUT=120s</code>, <code>MAX</em>TOTAL_TIME=14400s</code> (4 hours)</li>
+<li><strong>Extended timeouts</strong>: <code>API<em>TIMEOUT=120s</code>, <code>MAX</em>TOTAL_TIME=43200s</code> (12 hours)</li>
 <li><strong>Checkpoint/resume</strong>: Automatic detection and resume of incomplete exports</li>
 <li><strong>Export timing statistics</strong>: Detailed API call tracking and duration reporting</li>
 <li><strong>Zero-configuration reliability</strong>: Defaults tuned for 4000+ dashboards, 10K+ alerts</li>
@@ -371,10 +402,10 @@ The Cloud script now has <strong>full feature parity</strong> with the Enterpris
 <tr><th>Setting</th><th>Default</th><th>Purpose</th></tr>
 </thead>
 <tbody>
-<tr><td><code>BATCH_SIZE</code></td><td>100</td><td>Items per API request</td></tr>
+<tr><td><code>BATCH_SIZE</code></td><td>250</td><td>Items per API request</td></tr>
 <tr><td><code>RATE_LIMIT_DELAY</code></td><td>0.1s</td><td>Between requests (100ms)</td></tr>
 <tr><td><code>API_TIMEOUT</code></td><td>120s</td><td>Per-request timeout</td></tr>
-<tr><td><code>MAX_TOTAL_TIME</code></td><td>14400s</td><td>4 hours max runtime</td></tr>
+<tr><td><code>MAX_TOTAL_TIME</code></td><td>43200s</td><td>12 hours max runtime</td></tr>
 <tr><td><code>MAX_RETRIES</code></td><td>3</td><td>Retry with exponential backoff</td></tr>
 <tr><td><code>CHECKPOINT_ENABLED</code></td><td>true</td><td>Enable checkpoint/resume</td></tr>
 </tbody>
@@ -1198,6 +1229,63 @@ curl &quot;$URL/services/server/info&quot;
 # If custom CA or self-signed (warn user)
 curl -k &quot;$URL/services/server/info&quot;  # Not recommended</code></pre>
 <hr>
+<h2>PowerShell Edition</h2>
+<h3>Overview</h3>
+<p>
+<strong><code>dynabridge-splunk-cloud-export.ps1</code></strong> v4.3.0 provides identical export functionality for Windows environments. It requires zero external dependencies -- no Python, no curl, no jq. It uses native PowerShell cmdlets for all operations.
+</p>
+<ul>
+<li><strong>PowerShell 5.1+</strong> (Windows PowerShell, included with Windows 10/Server 2016+)</li>
+<li><strong>PowerShell 7+</strong> (cross-platform -- Windows, macOS, Linux)</li>
+</ul>
+<h3>Parameter Mapping (Bash to PowerShell)</h3>
+<table>
+<thead>
+<tr><th>Bash</th><th>PowerShell</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>--stack URL</code></td><td><code>-Stack URL</code></td><td>Splunk Cloud stack URL</td></tr>
+<tr><td><code>--token TOKEN</code></td><td><code>-Token TOKEN</code></td><td>API bearer token</td></tr>
+<tr><td><code>--user USER</code></td><td><code>-User USER</code></td><td>Username for basic auth</td></tr>
+<tr><td><code>--password PASS</code></td><td><code>-Password PASS</code></td><td>Password for basic auth</td></tr>
+<tr><td><code>--all-apps</code></td><td><code>-AllApps</code></td><td>Export all apps</td></tr>
+<tr><td><code>--apps LIST</code></td><td><code>-Apps LIST</code></td><td>Comma-separated app names</td></tr>
+<tr><td><code>--rbac</code></td><td><code>-Rbac</code></td><td>Enable RBAC collection</td></tr>
+<tr><td><code>--usage</code></td><td><code>-Usage</code></td><td>Enable usage analytics collection</td></tr>
+<tr><td><code>--scoped</code></td><td><em>(auto)</em></td><td>Auto-scoped when <code>-Apps</code> is specified</td></tr>
+<tr><td><code>--skip-internal</code></td><td><code>-SkipInternal</code></td><td>Skip <code>_internal</code> searches</td></tr>
+<tr><td><code>--resume-collect FILE</code></td><td><code>-ResumeCollect FILE</code></td><td>Resume from a previous archive</td></tr>
+<tr><td><code>-d, --debug</code></td><td><code>-Debug_Mode</code></td><td>Enable debug logging</td></tr>
+<tr><td><code>--output DIR</code></td><td><code>-Output DIR</code></td><td>Output directory</td></tr>
+<tr><td><code>--help</code></td><td><code>-ShowHelp</code></td><td>Show help message</td></tr>
+</tbody>
+</table>
+<h3>Key Differences from Bash</h3>
+<table>
+<thead>
+<tr><th>Aspect</th><th>Bash Script</th><th>PowerShell Script</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>HTTP Client</strong></td><td><code>curl</code></td><td><code>Invoke-WebRequest</code> / <code>Invoke-RestMethod</code></td></tr>
+<tr><td><strong>JSON Processing</strong></td><td>Python 3 (<code>json</code> module)</td><td><code>ConvertFrom-Json</code> / <code>ConvertTo-Json</code> (native)</td></tr>
+<tr><td><strong>Archive Creation</strong></td><td><code>tar</code> (system)</td><td><code>tar.exe</code> (built into Windows 10+)</td></tr>
+<tr><td><strong>External Dependencies</strong></td><td>Python 3, curl, tar</td><td>None -- all native PowerShell cmdlets</td></tr>
+<tr><td><strong>Platform</strong></td><td>Linux, macOS</td><td>Windows (5.1+), cross-platform (7+)</td></tr>
+</tbody>
+</table>
+<h3>Usage Examples</h3>
+<pre><code class="language-powershell"># Token-based authentication (recommended)
+.\dynabridge-splunk-cloud-export.ps1 -Stack &quot;acme-corp.splunkcloud.com&quot; -Token &quot;your-api-token&quot; -AllApps
+
+# Username/password authentication with specific apps
+.\dynabridge-splunk-cloud-export.ps1 -Stack &quot;acme-corp.splunkcloud.com&quot; -User &quot;admin&quot; -Password &quot;pass&quot; -Apps &quot;search,myapp&quot;
+
+# Resume from previous export
+.\dynabridge-splunk-cloud-export.ps1 -Stack &quot;acme-corp.splunkcloud.com&quot; -Token &quot;token&quot; -ResumeCollect &quot;dynabridge_cloud_export_acme_20260115.tar.gz&quot;
+
+# Full export with RBAC and usage analytics
+.\dynabridge-splunk-cloud-export.ps1 -Stack &quot;acme-corp.splunkcloud.com&quot; -Token &quot;token&quot; -AllApps -Rbac -Usage</code></pre>
+<hr>
 <h2>Appendix A: Full API Collection Script Outline</h2>
 <pre><code class="language-bash">#!/bin/bash
 # dynabridge-splunk-cloud-export.sh
@@ -1225,37 +1313,42 @@ curl -k &quot;$URL/services/server/info&quot;  # Not recommended</code></pre>
 # 12. Create archive
 # 13. Cleanup and display next steps</code></pre>
 <hr>
-<h2>Appendix B: jq Dependency Note</h2>
+<h2>Appendix B: JSON Processing Dependencies</h2>
+<h3>Bash Script (<code>dynabridge-splunk-cloud-export.sh</code>)</h3>
 <p>
-<strong>NOTE</strong>: <code>jq</code> is <strong>recommended</strong> (not required) for manifest.json generation in v4.0.0. The script will check for jq and display a warning if not installed, but will continue with fallback methods.
+The Bash script uses <strong>Python 3</strong> (not jq) for all JSON processing. Python 3 is typically available on systems where Splunk is installed (Splunk bundles its own Python). The script uses the <code>json</code> module from the Python standard library.
 </p>
-<pre><code class="language-bash"># Check if jq is installed
-if ! command -v jq &amp;&gt; /dev/null; then
-    error &quot;jq is not installed - REQUIRED for manifest.json generation&quot;
-    echo &quot;Install with: apt-get install jq / yum install jq / brew install jq&quot;
-    exit 1
+<pre><code class="language-bash"># The script checks for Python 3 at startup
+if command -v python3 &amp;&gt; /dev/null; then
+    PYTHON_CMD=&quot;python3&quot;
+elif command -v python &amp;&gt; /dev/null; then
+    PYTHON_CMD=&quot;python&quot;
 fi</code></pre>
 <p>
-The script uses jq extensively for:
+Python 3 is used for:
 </p>
 <ul>
-<li>Parsing REST API responses</li>
+<li>Parsing REST API JSON responses</li>
 <li>Extracting usage intelligence data</li>
 <li>Generating and validating manifest.json</li>
 <li>Building the ownership mapping files</li>
 </ul>
 <p>
-<strong>Installation</strong>:
+<strong>Note</strong>: <code>jq</code> is NOT required. Earlier versions of this specification referenced jq, but the script has used Python 3 since v3.6.0.
+</p>
+<h3>PowerShell Script (<code>dynabridge-splunk-cloud-export.ps1</code>)</h3>
+<p>
+The PowerShell script uses <strong>native PowerShell cmdlets</strong> for all JSON processing -- no external dependencies are required:
 </p>
 <ul>
-<li>Ubuntu/Debian: <code>apt-get install jq</code></li>
-<li>RHEL/CentOS: <code>yum install jq</code></li>
-<li>macOS: <code>brew install jq</code></li>
+<li><code>ConvertFrom-Json</code> -- parses JSON responses from Splunk REST API</li>
+<li><code>ConvertTo-Json</code> -- generates manifest.json and other output files</li>
+<li><code>Invoke-WebRequest</code> / <code>Invoke-RestMethod</code> -- HTTP client (replaces curl)</li>
 </ul>
 <hr>
 <p>
 <em>End of Splunk Cloud Export Script Technical Specification</em>
-<em>Version 4.1.0</em>
+<em>Version 4.3.0</em>
 </p>
     </main>
 

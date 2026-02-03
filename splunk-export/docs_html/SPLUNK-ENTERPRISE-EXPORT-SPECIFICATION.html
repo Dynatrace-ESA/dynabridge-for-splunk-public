@@ -269,7 +269,7 @@
 <h1>DynaBridge Splunk Enterprise Export Script - Comprehensive Specification</h1>
 <h2>Version 4.2.4 | Complete Data Collection Framework</h2>
 <p>
-<strong>Last Updated</strong>: January 2026
+<strong>Last Updated</strong>: February 2026
 <strong>Related Documents</strong>: <a href="SCRIPT-GENERATED-ANALYTICS-REFERENCE.md">Script-Generated Analytics Reference</a> | <a href="README-SPLUNK-ENTERPRISE.md">Enterprise README</a> | <a href="EXPORT-SCHEMA.md">Export Schema</a>
 </p>
 <hr>
@@ -286,6 +286,7 @@ This specification defines the complete requirements for a Splunk data collectio
 <li><strong>Usage Analytics</strong>: Query frequency, dashboard views, alert triggers, index volume trends</li>
 <li><strong>Migration Prioritization</strong>: Scoring of high-value assets worth migrating</li>
 </ul>
+<blockquote><p><strong>Note</strong>: For Splunk Cloud environments, dedicated Cloud export scripts are available: <code>dynabridge-splunk-cloud-export.sh</code> (Bash) and <code>dynabridge-splunk-cloud-export.ps1</code> (PowerShell). See <a href="README-SPLUNK-CLOUD.md">README-SPLUNK-CLOUD.md</a> for details.</p></blockquote>
 <hr>
 <h2>What's New in v4.2.4</h2>
 <h3>Two-Archive Anonymization (Preserves Original Data)</h3>
@@ -354,12 +355,12 @@ This preserves the original data in case anonymization corrupts files. Users can
 <h3>Enterprise-Ready Defaults</h3>
 <ul>
 <li><strong>Zero-configuration reliability</strong>: Defaults tuned for environments with 4000+ dashboards and 10K+ alerts</li>
-<li><strong>Extended timeouts</strong>: <code>API<em>TIMEOUT=120s</code>, <code>MAX</em>TOTAL<em>TIME=14400s</code> (4 hours), search <code>max</em>wait=300s</code></li>
+<li><strong>Extended timeouts</strong>: <code>API<em>TIMEOUT=120s</code>, <code>MAX</em>TOTAL<em>TIME=43200s</code> (12 hours), search <code>max</em>wait=300s</code></li>
 <li><strong>Optimized rate limiting</strong>: <code>RATE<em>LIMIT</em>DELAY=0.1s</code> - fast but polite API calls</li>
 </ul>
 <h3>Enterprise Resilience Features</h3>
 <ul>
-<li><strong>Paginated API calls</strong>: <code>splunk<em>api</em>call<em>paginated</code> with configurable <code>BATCH</em>SIZE</code> (default: 100)</li>
+<li><strong>Paginated API calls</strong>: <code>splunk<em>api</em>call<em>paginated</code> with configurable <code>BATCH</em>SIZE</code> (default: 250)</li>
 <li><strong>Checkpoint/resume</strong>: Automatic detection of incomplete exports with resume capability</li>
 <li><strong>SHC Captain detection</strong>: Warning when running on Search Head Cluster Captain</li>
 <li><strong>Export timing statistics</strong>: Detailed timing report at completion</li>

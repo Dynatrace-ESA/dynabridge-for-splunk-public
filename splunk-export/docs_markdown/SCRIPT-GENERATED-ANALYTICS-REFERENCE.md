@@ -3,8 +3,10 @@
 ## DynaBridge Splunk Export - Complete Analytics File Reference
 
 **Applies To**: Splunk Enterprise & Splunk Cloud Export Scripts
-**Version**: 4.2.4 (Enterprise) / 4.2.4 (Cloud)
-**Last Updated**: January 2026
+**Version**: 4.2.4 (Enterprise) / 4.3.0 (Cloud Bash & PowerShell)
+**Last Updated**: February 2026
+
+> **Note**: The PowerShell Cloud script (`dynabridge-splunk-cloud-export.ps1`) generates the same analytics files as the Bash Cloud script (`dynabridge-splunk-cloud-export.sh`).
 
 ### Important: v4.2.4 Default Behavior Change
 

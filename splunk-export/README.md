@@ -1,9 +1,41 @@
 # DynaBridge Splunk Export Scripts
 
-**Version**: 4.2.4
-**Last Updated**: January 2026
+**Version**: 4.3.0
+**Last Updated**: February 2026
 
-## What's New in v4.2.4
+## What's New in v4.3.0
+
+### Resume Collection from Partial Archives
+
+Cloud scripts now support the `--resume-collect` flag (Bash) or `-ResumeCollect` parameter (PowerShell). Pass a previous `.tar.gz` archive and the script will extract it, detect already-collected data, fill in any gaps, and output versioned archives with `-v1`, `-v2`, `-v3` suffixes. This is also useful for adding `--rbac` or `--usage` to an already-complete export without re-collecting everything.
+
+```bash
+# Bash: Resume a partial Cloud export
+./dynabridge-splunk-cloud-export.sh --resume-collect dynabridge_export_acme_20260115_120000.tar.gz
+
+# Bash: Add RBAC and usage to a complete export
+./dynabridge-splunk-cloud-export.sh --resume-collect dynabridge_export_acme_20260115_120000.tar.gz --rbac --usage
+```
+
+```powershell
+# PowerShell: Resume a partial Cloud export
+.\dynabridge-splunk-cloud-export.ps1 -ResumeCollect dynabridge_export_acme_20260115_120000.tar.gz
+
+# PowerShell: Add RBAC and usage to a complete export
+.\dynabridge-splunk-cloud-export.ps1 -ResumeCollect dynabridge_export_acme_20260115_120000.tar.gz -Rbac -Usage
+```
+
+### 12-Hour Maximum Runtime
+
+All scripts now support `MAX_TOTAL_TIME=43200` (12 hours, up from 4 hours), allowing large-scale enterprise exports to complete without timing out.
+
+### PowerShell Cloud Export Script
+
+New `dynabridge-splunk-cloud-export.ps1` provides full feature parity with the Bash Cloud script for Windows environments. Zero external dependencies required — works with PowerShell 5.1+ and PowerShell 7+. Supports the same collection categories, flags, anonymization, resume collection, and automation features as the Bash Cloud script.
+
+---
+
+### Previous v4.2.4 Changes
 
 ### Two-Archive Anonymization (Preserves Original Data)
 When anonymization is enabled, the script now creates **TWO archives**:
@@ -54,7 +86,7 @@ sudo -u splunk bash /tmp/dynabridge-splunk-export.sh
 # Download the .tar.gz export file when complete
 ```
 
-### Splunk Cloud
+### Splunk Cloud (Linux/macOS)
 
 ```bash
 # Run from YOUR machine (not on Splunk Cloud)
@@ -65,14 +97,25 @@ sudo -u splunk bash /tmp/dynabridge-splunk-export.sh
 # Enter your stack URL and credentials when prompted
 ```
 
+### Splunk Cloud (Windows)
+
+```powershell
+# Run from YOUR Windows machine (not on Splunk Cloud)
+.\dynabridge-splunk-cloud-export.ps1
+
+# Or non-interactive with token
+.\dynabridge-splunk-cloud-export.ps1 -Stack "acme-corp.splunkcloud.com" -Token "your-token"
+```
+
 ---
 
 ## Available Scripts
 
-| Script | Target Environment | Size | Access Method |
-|--------|-------------------|------|---------------|
-| `dynabridge-splunk-export.sh` | Splunk Enterprise (on-premises) | 239 KB | SSH + File System + REST API |
-| `dynabridge-splunk-cloud-export.sh` | Splunk Cloud (Classic & Victoria) | 157 KB | REST API only |
+| Script | Target Environment | Platform | Access Method |
+|--------|-------------------|----------|---------------|
+| `dynabridge-splunk-export.sh` | Splunk Enterprise (on-premises) | Bash (Linux/macOS) | SSH + File System + REST API |
+| `dynabridge-splunk-cloud-export.sh` | Splunk Cloud (Classic & Victoria) | Bash (Linux/macOS) | REST API only |
+| `dynabridge-splunk-cloud-export.ps1` | Splunk Cloud (Classic & Victoria) | PowerShell (Windows) | REST API only |
 
 ### Key Differences
 
@@ -82,6 +125,7 @@ sudo -u splunk bash /tmp/dynabridge-splunk-export.sh
 | **Access method** | SSH + file system + REST API | REST API only |
 | **What you need** | SSH access + splunk user | Network access + API token |
 | **Configuration files** | Direct file system access | Reconstructed from REST API |
+| **PowerShell script** | N/A | Full parity with Cloud Bash script for Windows environments |
 
 ---
 
@@ -119,7 +163,9 @@ Target specific apps for faster exports in large environments:
 | `--scoped` | Scope all collections (users, usage) to selected apps |
 | `--quick` | **TESTING ONLY** - Skip usage analytics and RBAC |
 | `--no-usage` | Skip usage analytics collection |
+| `--rbac` | Enable RBAC/user collection (off by default) |
 | `--no-rbac` | Skip RBAC/user collection (Enterprise only) |
+| `--resume-collect FILE` | Resume collection from a previous partial archive (Cloud only) |
 | `--debug` or `-d` | Enable verbose debug logging |
 
 > **⚠️ WARNING: `--quick` is for TESTING ONLY**
@@ -143,12 +189,13 @@ Both scripts include enterprise-scale features for large environments:
 |---------|---------|-------------|
 | Batch Processing | **250 items/request** | Handles 4000+ dashboards, 10K+ alerts |
 | API Timeout | 120 seconds | Extended timeout for large queries |
-| Max Runtime | 4 hours | Prevents runaway exports |
+| Max Runtime | 12 hours | Prevents runaway exports |
 | Retry Logic | 3 attempts | Exponential backoff on failures |
 | Checkpoint/Resume | Enabled | Resume interrupted exports |
 | Rate Limiting | **50ms delay** | Faster while preventing API throttling |
 | RBAC Collection | **OFF** (use `--rbac`) | Enable when you need user/role data |
 | Usage Analytics | **OFF** (use `--usage`) | Enable when you need usage metrics |
+| Resume Collection | `--resume-collect` | Resume from partial archive, output versioned archives (Cloud only) |
 
 ### Automation Support
 
@@ -168,6 +215,15 @@ Both scripts include enterprise-scale features for large environments:
   --apps "myapp1,myapp2" \
   --scoped \
   --debug
+```
+
+```powershell
+# Non-interactive PowerShell export
+.\dynabridge-splunk-cloud-export.ps1 `
+  -Stack "acme-corp.splunkcloud.com" `
+  -Token $env:SPLUNK_CLOUD_TOKEN `
+  -AllApps `
+  -Rbac -Usage
 ```
 
 ---
@@ -357,7 +413,7 @@ When anonymization is enabled, the script creates **TWO separate archives**:
 | tar | Any | `tar --version` |
 | jq | Optional | `jq --version` |
 
-### Cloud Script
+### Cloud Script (Bash)
 
 | Requirement | Version | Check Command |
 |-------------|---------|---------------|
@@ -365,6 +421,14 @@ When anonymization is enabled, the script creates **TWO separate archives**:
 | curl | Any | `curl --version` |
 | Python 3 | 3.6+ | `python3 --version` |
 | jq | Recommended | `jq --version` |
+
+### PowerShell Cloud Script
+
+| Requirement | Version | Check Command |
+|-------------|---------|---------------|
+| PowerShell | 5.1+ or 7+ | `$PSVersionTable.PSVersion` |
+| Windows | 10 1803+ | For built-in tar.exe |
+| Network access | Port 8089 | To Splunk Cloud instance |
 
 ---
 
@@ -393,6 +457,7 @@ When anonymization is enabled, the script creates **TWO separate archives**:
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 4.3.0 | Feb 2026 | Resume collection (`--resume-collect`), PowerShell Cloud script, 12-hour max runtime |
 | 4.2.4 | Jan 2026 | Two-archive anonymization, RBAC/usage OFF by default, query optimizations |
 | 4.2.0 | Jan 2026 | App-centric dashboard structure (v2), manifest schema v4.0 |
 | 4.1.0 | Jan 2026 | App-scoped export mode (`--apps`, `--scoped`, `--quick`), debug mode |

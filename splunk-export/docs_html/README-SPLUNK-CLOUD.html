@@ -269,11 +269,24 @@
 <h1>DynaBridge Splunk Cloud Export Script</h1>
 <h2>Prerequisites Guide for Splunk Cloud (Classic & Victoria Experience)</h2>
 <p>
-<strong>Version</strong>: 4.2.4
-<strong>Last Updated</strong>: January 2026
+<strong>Version</strong>: 4.3.0
+<strong>Last Updated</strong>: February 2026
 <strong>Related Documents</strong>: <a href="SCRIPT-GENERATED-ANALYTICS-REFERENCE.md">Script-Generated Analytics Reference</a> | <a href="SPLUNK-CLOUD-EXPORT-SPECIFICATION.md">Cloud Export Specification</a>
 </p>
-<h3>What's New in v4.2.4</h3>
+<h3>What's New in v4.3.0</h3>
+<h4>Resume Collection (<code>--resume-collect</code>)</h4>
+<p>
+Pass a previous <code>.tar.gz</code> export to the script, and it will extract it, detect what has already been collected, fill in the gaps, and create a versioned output archive (<code>-v1</code>, <code>-v2</code>, etc.). This is ideal for exports that timed out or were interrupted before completion. You can also add <code>--rbac</code> or <code>--usage</code> flags to complete exports that were originally run without those options.
+</p>
+<h4>12-Hour Max Runtime</h4>
+<p>
+<code>MAX<em>TOTAL</em>TIME</code> has been increased to <code>43200</code> seconds (12 hours), up from 14400 (4 hours), to support very large Splunk Cloud environments with thousands of apps and dashboards.
+</p>
+<h4>PowerShell Edition</h4>
+<p>
+A new <code>dynabridge-splunk-cloud-export.ps1</code> script provides identical functionality for Windows environments. It requires only PowerShell 5.1+ and has zero external dependencies (no Python, curl, or jq needed). See the <a href="#powershell-edition">PowerShell Edition</a> section below for details.
+</p>
+<h3>Previous v4.2.4 Changes</h3>
 <h4>Two-Archive Anonymization (Preserves Original Data)</h4>
 <p>
 When anonymization is enabled, the script now creates <strong>TWO archives</strong>:
@@ -307,17 +320,24 @@ This preserves the original data in case anonymization corrupts files. Users can
 # You need network access to your Splunk Cloud instance
 
 ./dynabridge-splunk-cloud-export.sh</code></pre>
+<h3>Quick Start (PowerShell - Windows)</h3>
+<pre><code class="language-powershell"># This script runs from YOUR Windows machine (not on Splunk Cloud)
+.\dynabridge-splunk-cloud-export.ps1
+
+# Non-interactive with token
+.\dynabridge-splunk-cloud-export.ps1 -Stack &quot;acme-corp.splunkcloud.com&quot; -Token &quot;your-token&quot;</code></pre>
 <hr>
 <h2>How This Differs from Enterprise Export</h2>
 <table>
 <thead>
-<tr><th>Aspect</th><th>Enterprise Script</th><th>Cloud Script (This One)</th></tr>
+<tr><th>Aspect</th><th>Enterprise Script</th><th>Cloud Script (Bash)</th><th>Cloud Script (PowerShell)</th></tr>
 </thead>
 <tbody>
-<tr><td><strong>Where you run it</strong></td><td>ON the Splunk server</td><td>ANYWHERE (your laptop, jump host)</td></tr>
-<tr><td><strong>Access method</strong></td><td>SSH + File system</td><td>REST API only</td></tr>
-<tr><td><strong>What you need</strong></td><td>SSH access + splunk user</td><td>Network access + API credentials</td></tr>
-<tr><td><strong>File reading</strong></td><td>Reads props.conf, etc.</td><td>Reconstructs from REST API</td></tr>
+<tr><td><strong>Where you run it</strong></td><td>ON the Splunk server</td><td>ANYWHERE (your laptop, jump host)</td><td>ANYWHERE (Windows machine)</td></tr>
+<tr><td><strong>Access method</strong></td><td>SSH + File system</td><td>REST API only</td><td>REST API only</td></tr>
+<tr><td><strong>What you need</strong></td><td>SSH access + splunk user</td><td>Network access + API credentials</td><td>Network access + API credentials</td></tr>
+<tr><td><strong>File reading</strong></td><td>Reads props.conf, etc.</td><td>Reconstructs from REST API</td><td>Reconstructs from REST API</td></tr>
+<tr><td><strong>Dependencies</strong></td><td>bash, tar</td><td>bash, curl, Python 3</td><td>PowerShell 5.1+ only (zero external deps)</td></tr>
 </tbody>
 </table>
 <hr>
@@ -406,6 +426,18 @@ Run this in Splunk Cloud search:
 <tr><td><code>curl</code></td><td>REST API calls</td><td><code>curl --version</code></td></tr>
 <tr><td><code>Python 3</code></td><td>JSON parsing</td><td><code>python3 --version</code></td></tr>
 <tr><td>Disk space</td><td>Store export</td><td>500MB+ free</td></tr>
+</tbody>
+</table>
+<h4>PowerShell Edition Requirements</h4>
+<table>
+<thead>
+<tr><th>Requirement</th><th>Purpose</th><th>Check Command</th></tr>
+</thead>
+<tbody>
+<tr><td>PowerShell 5.1+ or 7+</td><td>Script execution</td><td><code>$PSVersionTable.PSVersion</code></td></tr>
+<tr><td>Windows 10 1803+</td><td>Built-in tar.exe</td><td><code>tar --version</code></td></tr>
+<tr><td>Network access</td><td>REST API calls</td><td>Port 8089 to Splunk Cloud</td></tr>
+<tr><td>No external dependencies</td><td>Pure PowerShell</td><td>No Python, curl, or jq needed</td></tr>
 </tbody>
 </table>
 <hr>
@@ -554,10 +586,13 @@ export SPLUNK_CLOUD_TOKEN=&quot;your-api-token&quot;
 <tr><td><code>--no-usage</code></td><td>Skip usage analytics collection</td><td><code>--no-usage</code></td></tr>
 <tr><td><code>--skip-internal</code></td><td>Skip searches requiring _internal index</td><td><code>--skip-internal</code></td></tr>
 <tr><td><code>--output</code></td><td>Output directory</td><td><code>--output /path/to/output</code></td></tr>
+<tr><td><code>--rbac</code></td><td>Enable RBAC/user collection (OFF by default)</td><td><code>--rbac</code></td></tr>
+<tr><td><code>--resume-collect FILE</code></td><td>Resume from previous .tar.gz archive <strong>(NEW v4.3.0)</strong></td><td><code>--resume-collect ./previous.tar.gz</code></td></tr>
 <tr><td><code>-d, --debug</code></td><td>Enable verbose debug logging <strong>(NEW v4.1.0)</strong></td><td><code>--debug</code></td></tr>
 <tr><td><code>--help</code></td><td>Show help message</td><td><code>--help</code></td></tr>
 </tbody>
 </table>
+<blockquote><p><strong>Note</strong>: PowerShell equivalents use <code>-</code> prefix (e.g., <code>-Stack</code>, <code>-Token</code>, <code>-Rbac</code>, <code>-Usage</code>, <code>-ResumeCollect</code>)</p></blockquote>
 <h3>App-Scoped Export Mode (NEW in v4.1.0)</h3>
 <p>
 For large Splunk Cloud environments, dramatically reduce export time by targeting specific apps:
@@ -609,6 +644,63 @@ For large Splunk Cloud environments, dramatically reduce export time by targetin
 >
 </p>
 <blockquote><p><strong>Always use the default (full) export or <code>--scoped</code> for any export intended for migration analysis.</strong></p></blockquote>
+<h3>Resume Collection Mode (NEW in v4.3.0)</h3>
+<p>
+If a previous export was interrupted, timed out, or was run without certain flags (like <code>--rbac</code> or <code>--usage</code>), you can resume and complete the export without starting over.
+</p>
+<p>
+The script extracts the previous archive, inspects what was already collected, skips those data types, and collects only the missing pieces. The output is a new versioned archive (e.g., <code>-v1</code>, <code>-v2</code>).
+</p>
+<h4>Bash Examples</h4>
+<pre><code class="language-bash"># Resume a previous incomplete export
+./dynabridge-splunk-cloud-export.sh \
+  --stack acme.splunkcloud.com \
+  --token &quot;$TOKEN&quot; \
+  --resume-collect ./dynabridge_cloud_export_acme-corp_20260115_093000.tar.gz
+
+# Resume AND add RBAC + usage data that were skipped originally
+./dynabridge-splunk-cloud-export.sh \
+  --stack acme.splunkcloud.com \
+  --token &quot;$TOKEN&quot; \
+  --resume-collect ./dynabridge_cloud_export_acme-corp_20260115_093000.tar.gz \
+  --rbac --usage</code></pre>
+<h4>PowerShell Examples</h4>
+<pre><code class="language-powershell"># Resume a previous incomplete export
+.\dynabridge-splunk-cloud-export.ps1 `
+  -Stack &quot;acme.splunkcloud.com&quot; `
+  -Token $TOKEN `
+  -ResumeCollect &quot;.\dynabridge_cloud_export_acme-corp_20260115_093000.tar.gz&quot;
+
+# Resume AND add RBAC + usage data
+.\dynabridge-splunk-cloud-export.ps1 `
+  -Stack &quot;acme.splunkcloud.com&quot; `
+  -Token $TOKEN `
+  -ResumeCollect &quot;.\dynabridge_cloud_export_acme-corp_20260115_093000.tar.gz&quot; `
+  -Rbac -Usage</code></pre>
+<h4>Versioned Output</h4>
+<p>
+When resuming, the script creates a versioned archive to avoid overwriting the original:
+</p>
+<ul>
+<li>Original: <code>dynabridge<em>cloud</em>export<em>acme-corp</em>20260115_093000.tar.gz</code></li>
+<li>First resume: <code>dynabridge<em>cloud</em>export<em>acme-corp</em>20260115_093000-v1.tar.gz</code></li>
+<li>Second resume: <code>dynabridge<em>cloud</em>export<em>acme-corp</em>20260115_093000-v2.tar.gz</code></li>
+</ul>
+<h4>What Gets Skipped vs Collected</h4>
+<table>
+<thead>
+<tr><th>Data Type</th><th>Skip If...</th></tr>
+</thead>
+<tbody>
+<tr><td>Dashboards</td><td>App already has dashboard files</td></tr>
+<tr><td>Saved Searches</td><td>App already has <code>savedsearches.json</code></td></tr>
+<tr><td>Knowledge Objects</td><td>App has <code>macros.json</code> + <code>props.json</code> + <code>transforms.json</code></td></tr>
+<tr><td>Configs</td><td><code>_configs/</code> directory exists</td></tr>
+<tr><td>RBAC</td><td><code>users.json</code> + <code>roles.json</code> exist</td></tr>
+<tr><td>Usage Analytics</td><td><code>usage_analytics/</code> has 2+ files</td></tr>
+<tr><td>Indexes</td><td><code>indexes.json</code> exists</td></tr>
+</tbody>
+</table>
 <h3>Debug Mode (NEW in v4.1.0)</h3>
 <p>
 When troubleshooting issues, enable debug mode to capture detailed logs:
@@ -640,10 +732,11 @@ Debug mode provides:
 <tbody>
 <tr><td><code>BATCH_SIZE</code></td><td>100</td><td>Items per API request</td></tr>
 <tr><td><code>API_TIMEOUT</code></td><td>120s</td><td>Per-request timeout (2 min)</td></tr>
-<tr><td><code>MAX_TOTAL_TIME</code></td><td>14400s</td><td>Max runtime (4 hours)</td></tr>
+<tr><td><code>MAX_TOTAL_TIME</code></td><td>43200s</td><td>Max runtime (12 hours)</td></tr>
 <tr><td><code>MAX_RETRIES</code></td><td>3</td><td>Retry attempts with exponential backoff</td></tr>
 <tr><td><code>RATE_LIMIT_DELAY</code></td><td>0.1s</td><td>Delay between API calls (100ms)</td></tr>
 <tr><td><code>CHECKPOINT_ENABLED</code></td><td>true</td><td>Enable checkpoint/resume capability</td></tr>
+<tr><td><code>RESUME_COLLECT</code></td><td>(none)</td><td>Path to previous .tar.gz for resume collection <strong>(NEW v4.3.0)</strong></td></tr>
 </tbody>
 </table>
 <h3>Checkpoint/Resume Capability</h3>
@@ -682,6 +775,63 @@ export API_TIMEOUT=180
 
 # Or inline
 BATCH_SIZE=50 API_TIMEOUT=180 ./dynabridge-splunk-cloud-export.sh</code></pre>
+<hr>
+<h2>PowerShell Edition</h2>
+<p>
+The <code>dynabridge-splunk-cloud-export.ps1</code> script provides the same functionality as the Bash script for Windows environments. It is written in pure PowerShell with zero external dependencies -- no Python, curl, jq, or any other tools are required.
+</p>
+<h3>Supported PowerShell Versions</h3>
+<table>
+<thead>
+<tr><th>Version</th><th>Platform</th><th>Notes</th></tr>
+</thead>
+<tbody>
+<tr><td>PowerShell 5.1</td><td>Windows PowerShell (built into Windows 10/11)</td><td>Most common</td></tr>
+<tr><td>PowerShell 7+</td><td>Cross-platform (Windows, macOS, Linux)</td><td>Recommended for non-Windows</td></tr>
+</tbody>
+</table>
+<h3>Parameter Equivalence (Bash to PowerShell)</h3>
+<table>
+<thead>
+<tr><th>Bash Flag</th><th>PowerShell Parameter</th><th>Example</th></tr>
+</thead>
+<tbody>
+<tr><td><code>--stack</code></td><td><code>-Stack</code></td><td><code>-Stack "acme.splunkcloud.com"</code></td></tr>
+<tr><td><code>--token</code></td><td><code>-Token</code></td><td><code>-Token "xxxxx"</code></td></tr>
+<tr><td><code>--user</code></td><td><code>-User</code></td><td><code>-User "admin"</code></td></tr>
+<tr><td><code>--password</code></td><td><code>-Password</code></td><td><code>-Password "xxx"</code></td></tr>
+<tr><td><code>--apps</code></td><td><code>-Apps</code></td><td><code>-Apps "search,myapp"</code></td></tr>
+<tr><td><code>--all-apps</code></td><td><code>-AllApps</code></td><td><code>-AllApps</code></td></tr>
+<tr><td><code>--quick</code></td><td><code>-Quick</code></td><td><code>-Quick</code></td></tr>
+<tr><td><code>--scoped</code></td><td><code>-Scoped</code></td><td><code>-Scoped</code></td></tr>
+<tr><td><code>--rbac</code></td><td><code>-Rbac</code></td><td><code>-Rbac</code></td></tr>
+<tr><td><code>--usage</code></td><td><code>-Usage</code></td><td><code>-Usage</code></td></tr>
+<tr><td><code>--no-usage</code></td><td><code>-NoUsage</code></td><td><code>-NoUsage</code></td></tr>
+<tr><td><code>--resume-collect</code></td><td><code>-ResumeCollect</code></td><td><code>-ResumeCollect ".\previous.tar.gz"</code></td></tr>
+<tr><td><code>--output</code></td><td><code>-Output</code></td><td><code>-Output "C:\exports"</code></td></tr>
+<tr><td><code>--debug</code></td><td><code>-Debug</code></td><td><code>-Debug</code></td></tr>
+<tr><td><code>--help</code></td><td><code>-Help</code> or <code>Get-Help</code></td><td><code>Get-Help .\dynabridge-splunk-cloud-export.ps1</code></td></tr>
+</tbody>
+</table>
+<h3>Example Commands</h3>
+<pre><code class="language-powershell"># Interactive mode (prompts for all inputs)
+.\dynabridge-splunk-cloud-export.ps1
+
+# Non-interactive full export
+.\dynabridge-splunk-cloud-export.ps1 -Stack &quot;acme.splunkcloud.com&quot; -Token $env:SPLUNK_TOKEN -AllApps
+
+# Export specific apps with RBAC and usage
+.\dynabridge-splunk-cloud-export.ps1 -Stack &quot;acme.splunkcloud.com&quot; -Token $env:SPLUNK_TOKEN -Apps &quot;search,security_app&quot; -Rbac -Usage
+
+# Resume a previous incomplete export
+.\dynabridge-splunk-cloud-export.ps1 -Stack &quot;acme.splunkcloud.com&quot; -Token $env:SPLUNK_TOKEN -ResumeCollect &quot;.\previous_export.tar.gz&quot;</code></pre>
+<h3>Key Differences from Bash</h3>
+<ul>
+<li><strong>Zero external dependencies</strong>: Uses <code>Invoke-RestMethod</code> instead of curl, native JSON handling instead of Python/jq</li>
+<li><strong>Windows-native tar</strong>: Uses <code>tar.exe</code> built into Windows 10 1803+ for archive creation</li>
+<li><strong>PowerShell parameter style</strong>: Uses <code>-ParameterName</code> instead of <code>--flag-name</code></li>
+<li><strong>Environment variables</strong>: Use <code>$env:SPLUNK<em>CLOUD</em>TOKEN</code> instead of <code>$SPLUNK<em>CLOUD</em>TOKEN</code></li>
+</ul>
 <hr>
 <h2>Troubleshooting</h2>
 <h3>Connection Refused</h3>
@@ -822,6 +972,19 @@ The export creates a <code>.tar.gz</code> file compatible with DynaBridge contai
 <pre><code class="language-bash">export SPLUNK_CLOUD_STACK=&quot;your-stack.splunkcloud.com&quot;
 export SPLUNK_CLOUD_TOKEN=&quot;your-token&quot;
 ./dynabridge-splunk-cloud-export.sh --all-apps --output /exports/</code></pre>
+<h3>Q: Can I run this on Windows?</h3>
+<p>
+<strong>A: Yes!</strong> Use <code>dynabridge-splunk-cloud-export.ps1</code> which requires only PowerShell 5.1+ and has zero external dependencies. See the <a href="#powershell-edition">PowerShell Edition</a> section for details.
+</p>
+<h3>Q: My previous export timed out. Do I need to start over?</h3>
+<p>
+<strong>A: No!</strong> Use <code>--resume-collect</code> (Bash) or <code>-ResumeCollect</code> (PowerShell) to pass your previous <code>.tar.gz</code>. The script will detect what has already been collected and fill in the gaps, creating a new versioned archive (e.g., <code>-v1</code>).
+</p>
+<pre><code class="language-bash"># Bash
+./dynabridge-splunk-cloud-export.sh --stack acme.splunkcloud.com --token &quot;$TOKEN&quot; --resume-collect ./previous_export.tar.gz
+
+# PowerShell
+.\dynabridge-splunk-cloud-export.ps1 -Stack &quot;acme.splunkcloud.com&quot; -Token $TOKEN -ResumeCollect &quot;.\previous_export.tar.gz&quot;</code></pre>
 <h3>Q: What if I have multiple Splunk Cloud stacks?</h3>
 <p>
 <strong>A: Run the script once per stack.</strong> Each export will be labeled with the stack name.

@@ -270,8 +270,8 @@
 <h2>READ THIS FIRST - Complete Prerequisites Guide</h2>
 <p>
 <strong>Version</strong>: 4.2.4
-<strong>Last Updated</strong>: January 2026
-<strong>Related Documents</strong>: <a href="SCRIPT-GENERATED-ANALYTICS-REFERENCE.md">Script-Generated Analytics Reference</a> | <a href="SPLUNK-ENTERPRISE-EXPORT-SPECIFICATION.md">Enterprise Export Specification</a> | <a href="EXPORT-IMPROVEMENT-ANALYSIS.md">Export Improvement Analysis</a>
+<strong>Last Updated</strong>: February 2026
+<strong>Related Documents</strong>: <a href="SCRIPT-GENERATED-ANALYTICS-REFERENCE.md">Script-Generated Analytics Reference</a> | <a href="SPLUNK-ENTERPRISE-EXPORT-SPECIFICATION.md">Enterprise Export Specification</a> | <a href="EXPORT-IMPROVEMENT-ANALYSIS.md">Export Improvement Analysis</a> | For Splunk Cloud exports, see <a href="README-SPLUNK-CLOUD.md">Cloud Export README</a>
 </p>
 <h3>What's New in v4.2.4</h3>
 <h4>Two-Archive Anonymization (Preserves Original Data)</h4>
@@ -383,20 +383,22 @@ Supported architectures:
 <strong>Splunk Cloud does NOT allow SSH access</strong> to the underlying infrastructure.
 </p>
 <p>
-For Splunk Cloud migrations, you need:
+For Splunk Cloud migrations, use the dedicated Cloud export scripts:
+</p>
+<ul>
+<li><strong><code>dynabridge-splunk-cloud-export.sh</code></strong> -- Bash script for Linux/macOS</li>
+<li><strong><code>dynabridge-splunk-cloud-export.ps1</code></strong> -- PowerShell script for Windows</li>
+</ul>
+<p>
+These scripts operate 100% via REST API and require:
 </p>
 <ol>
-<li><strong>REST API-only export</strong> (different script - contact DynaBridge team)</li>
-<li><strong>Splunk Cloud admin credentials</strong> with appropriate permissions</li>
+<li><strong>Splunk Cloud admin credentials</strong> or API token with appropriate permissions</li>
 <li><strong>Network access</strong> to <code>https://your-stack.splunkcloud.com:8089</code></li>
 </ol>
 <p>
-If you're migrating from Splunk Cloud, please contact the DynaBridge team for:
+See <strong><a href="README-SPLUNK-CLOUD.md">README-SPLUNK-CLOUD.md</a></strong> for full prerequisites, usage instructions, and parameter reference.
 </p>
-<ul>
-<li>Splunk Cloud-specific export script</li>
-<li>Guidance on Cloud-to-Dynatrace migration patterns</li>
-</ul>
 <hr>
 <h2>What This Document Covers</h2>
 <p>
@@ -806,7 +808,7 @@ Different Splunk deployment types require different access levels. Identify your
 └─────────────────────────────────────────────────────────────┘</code></pre>
 <h3>4.8 Splunk Cloud (Classic & Victoria Experience)</h3>
 <p>
-<strong>⚠️ NOT CURRENTLY SUPPORTED BY THIS SCRIPT</strong>
+<strong>⚠️ NOT SUPPORTED BY THIS ENTERPRISE SCRIPT -- USE THE CLOUD EXPORT SCRIPTS</strong>
 </p>
 <p>
 <strong>Description</strong>: Splunk-managed SaaS deployment
@@ -830,15 +832,13 @@ Different Splunk deployment types require different access levels. Identify your
 │  │                                                       │   │
 │  └──────────────────────────────────────────────────────┘   │
 │                                                              │
-│  FOR SPLUNK CLOUD MIGRATIONS:                               │
+│  FOR SPLUNK CLOUD MIGRATIONS, USE:                          │
 │                                                              │
-│  Contact the DynaBridge team for:                           │
-│  • Splunk Cloud REST API-only export script                 │
-│  • Cloud-specific migration guidance                        │
-│  • Hybrid (Cloud + On-prem) migration patterns              │
+│  • dynabridge-splunk-cloud-export.sh (Bash - Linux/macOS)  │
+│  • dynabridge-splunk-cloud-export.ps1  (PowerShell - Windows)│
 │                                                              │
-│  A future version may include --cloud mode for REST-only    │
-│  collection from Splunk Cloud environments.                 │
+│  Both scripts operate 100% via REST API.                    │
+│  See README-SPLUNK-CLOUD.md for full documentation.         │
 │                                                              │
 └─────────────────────────────────────────────────────────────┘</code></pre>
 <table>
@@ -848,7 +848,8 @@ Different Splunk deployment types require different access levels. Identify your
 <tbody>
 <tr><td><strong>Server Access</strong></td><td>❌ Not possible - No SSH to Splunk Cloud</td></tr>
 <tr><td><strong>This Script</strong></td><td>❌ Not supported</td></tr>
-<tr><td><strong>Alternative</strong></td><td>Contact DynaBridge team for Cloud export tool</td></tr>
+<tr><td><strong>Alternative (Bash)</strong></td><td><code>dynabridge-splunk-cloud-export.sh</code> -- see <a href="README-SPLUNK-CLOUD.md">README-SPLUNK-CLOUD.md</a></td></tr>
+<tr><td><strong>Alternative (PowerShell)</strong></td><td><code>dynabridge-splunk-cloud-export.ps1</code> -- see <a href="README-SPLUNK-CLOUD.md">README-SPLUNK-CLOUD.md</a></td></tr>
 </tbody>
 </table>
 <hr>
@@ -1242,9 +1243,9 @@ This ensures your export can be safely shared with consultants or support teams.
 <tr><th>Setting</th><th>Default</th><th>Description</th></tr>
 </thead>
 <tbody>
-<tr><td><code>BATCH_SIZE</code></td><td>100</td><td>Items per API request</td></tr>
+<tr><td><code>BATCH_SIZE</code></td><td>250</td><td>Items per API request</td></tr>
 <tr><td><code>API_TIMEOUT</code></td><td>120s</td><td>Per-request timeout (2 min)</td></tr>
-<tr><td><code>MAX_TOTAL_TIME</code></td><td>14400s</td><td>Max runtime (4 hours)</td></tr>
+<tr><td><code>MAX_TOTAL_TIME</code></td><td>43200s</td><td>Max runtime (12 hours)</td></tr>
 <tr><td><code>MAX_RETRIES</code></td><td>3</td><td>Retry attempts with exponential backoff</td></tr>
 <tr><td><code>RATE_LIMIT_DELAY</code></td><td>0.1s</td><td>Delay between API calls (100ms)</td></tr>
 <tr><td><code>CHECKPOINT_ENABLED</code></td><td>true</td><td>Enable checkpoint/resume capability</td></tr>
@@ -1394,7 +1395,7 @@ bash dynabridge-splunk-export.sh</code></pre>
 <h2>Quick Reference Card</h2>
 <h3>Where to Run - Decision Tree</h3>
 <pre><code>Is it Splunk Cloud?
-  └─ YES → ❌ This script not supported. Contact DynaBridge team.
+  └─ YES → ❌ This script not supported. Use Cloud scripts (see README-SPLUNK-CLOUD.md).
   └─ NO  → Is it a distributed environment?
              └─ YES → Run on Search Head (or SHC Captain)
              └─ NO  → Run on the standalone Splunk server</code></pre>
@@ -1411,7 +1412,7 @@ bash dynabridge-splunk-export.sh</code></pre>
 <tr><td>With Deployment Server</td><td>SH + optionally DS</td><td><code>splunk</code></td><td>Admin</td><td>DS for forwarder configs</td></tr>
 <tr><td>Universal Forwarder</td><td>❌ Don't run here</td><td>-</td><td>-</td><td>Use Deployment Server instead</td></tr>
 <tr><td>Heavy Forwarder</td><td>❌ Don't run here</td><td>-</td><td>-</td><td>Use Deployment Server instead</td></tr>
-<tr><td>Splunk Cloud</td><td>❌ Not supported</td><td>-</td><td>-</td><td>Different script needed</td></tr>
+<tr><td>Splunk Cloud</td><td>❌ Not supported</td><td>-</td><td>-</td><td>Use Cloud scripts (see README-SPLUNK-CLOUD.md)</td></tr>
 </tbody>
 </table>
 <h3>One-Liner Access Test</h3>
