@@ -33,6 +33,26 @@ All scripts now support `MAX_TOTAL_TIME=43200` (12 hours, up from 4 hours), allo
 
 New `dynabridge-splunk-cloud-export.ps1` provides full feature parity with the Bash Cloud script for Windows environments. Zero external dependencies required — works with PowerShell 5.1+ and PowerShell 7+. Supports the same collection categories, flags, anonymization, resume collection, and automation features as the Bash Cloud script.
 
+### Proxy Support
+
+Cloud scripts (both Bash and PowerShell) now support routing all connections through a corporate proxy server. This is essential for enterprise environments where direct internet access to Splunk Cloud is blocked.
+
+```bash
+# Bash: Route through corporate proxy
+./dynabridge-splunk-cloud-export.sh --proxy http://proxy.company.com:8080 --stack acme.splunkcloud.com --token "$TOKEN"
+```
+
+```powershell
+# PowerShell: Route through corporate proxy
+.\dynabridge-splunk-cloud-export.ps1 -Proxy "http://proxy.company.com:8080" -Stack "acme.splunkcloud.com" -Token $TOKEN
+```
+
+Key behaviors:
+- **Interactive prompt**: If not provided via flag, the script asks during setup whether a proxy is needed (default: No)
+- **Adaptive connectivity tests**: DNS and TCP port tests are skipped when a proxy is configured (the proxy handles routing)
+- **All API calls routed**: Every `curl` / `Invoke-WebRequest` call uses the proxy
+- **Non-interactive support**: Pass `--proxy` / `-Proxy` for fully automated exports
+
 ---
 
 ### Previous v4.2.4 Changes
@@ -166,6 +186,7 @@ Target specific apps for faster exports in large environments:
 | `--rbac` | Enable RBAC/user collection (off by default) |
 | `--no-rbac` | Skip RBAC/user collection (Enterprise only) |
 | `--resume-collect FILE` | Resume collection from a previous partial archive (Cloud only) |
+| `--proxy URL` | Route all connections through a proxy server (Cloud only) |
 | `--debug` or `-d` | Enable verbose debug logging |
 
 > **⚠️ WARNING: `--quick` is for TESTING ONLY**
@@ -196,6 +217,7 @@ Both scripts include enterprise-scale features for large environments:
 | RBAC Collection | **OFF** (use `--rbac`) | Enable when you need user/role data |
 | Usage Analytics | **OFF** (use `--usage`) | Enable when you need usage metrics |
 | Resume Collection | `--resume-collect` | Resume from partial archive, output versioned archives (Cloud only) |
+| Proxy Support | `--proxy` / `-Proxy` | Route all connections through a corporate proxy (Cloud only) |
 
 ### Automation Support
 

@@ -306,6 +306,17 @@ Resume from a previous export archive to fill gaps without re-collecting everyth
 <li>Supports PowerShell 5.1+ (Windows PowerShell) and PowerShell 7+ (cross-platform)</li>
 <li>See the <a href="#powershell-edition">PowerShell Edition</a> section below for full parameter mapping</li>
 </ul>
+<h3>Proxy Support (<code>--proxy</code> / <code>-Proxy</code>)</h3>
+<p>
+Both Cloud scripts support routing all API connections through a corporate proxy server:
+</p>
+<ul>
+<li><strong>Bash</strong>: <code>--proxy http://proxy.company.com:8080</code> sets <code>CURL<em>PROXY</em>ARGS="-x $PROXY_URL"</code> for all curl calls</li>
+<li><strong>PowerShell</strong>: <code>-Proxy "http://proxy.company.com:8080"</code> adds <code>-Proxy</code> parameter to all <code>Invoke-WebRequest</code> calls</li>
+<li>When a proxy is configured, DNS resolution and TCP port connectivity tests are skipped (the proxy handles routing)</li>
+<li>Interactive prompt asks whether a proxy is needed during setup (default: No); skipped in non-interactive mode or when <code>--proxy</code> / <code>-Proxy</code> is provided</li>
+<li>Connectivity failure messages include proxy-specific troubleshooting guidance</li>
+</ul>
 <hr>
 <h2>What's New in v4.2.4</h2>
 <h3>Two-Archive Anonymization (Preserves Original Data)</h3>
@@ -1255,6 +1266,7 @@ curl -k &quot;$URL/services/server/info&quot;  # Not recommended</code></pre>
 <tr><td><code>--scoped</code></td><td><em>(auto)</em></td><td>Auto-scoped when <code>-Apps</code> is specified</td></tr>
 <tr><td><code>--skip-internal</code></td><td><code>-SkipInternal</code></td><td>Skip <code>_internal</code> searches</td></tr>
 <tr><td><code>--resume-collect FILE</code></td><td><code>-ResumeCollect FILE</code></td><td>Resume from a previous archive</td></tr>
+<tr><td><code>--proxy URL</code></td><td><code>-Proxy URL</code></td><td>Route all connections through a proxy server</td></tr>
 <tr><td><code>-d, --debug</code></td><td><code>-Debug_Mode</code></td><td>Enable debug logging</td></tr>
 <tr><td><code>--output DIR</code></td><td><code>-Output DIR</code></td><td>Output directory</td></tr>
 <tr><td><code>--help</code></td><td><code>-ShowHelp</code></td><td>Show help message</td></tr>

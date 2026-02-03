@@ -41,6 +41,14 @@ Resume from a previous export archive to fill gaps without re-collecting everyth
 - Supports PowerShell 5.1+ (Windows PowerShell) and PowerShell 7+ (cross-platform)
 - See the [PowerShell Edition](#powershell-edition) section below for full parameter mapping
 
+### Proxy Support (`--proxy` / `-Proxy`)
+Both Cloud scripts support routing all API connections through a corporate proxy server:
+- **Bash**: `--proxy http://proxy.company.com:8080` sets `CURL_PROXY_ARGS="-x $PROXY_URL"` for all curl calls
+- **PowerShell**: `-Proxy "http://proxy.company.com:8080"` adds `-Proxy` parameter to all `Invoke-WebRequest` calls
+- When a proxy is configured, DNS resolution and TCP port connectivity tests are skipped (the proxy handles routing)
+- Interactive prompt asks whether a proxy is needed during setup (default: No); skipped in non-interactive mode or when `--proxy` / `-Proxy` is provided
+- Connectivity failure messages include proxy-specific troubleshooting guidance
+
 ---
 
 ## What's New in v4.2.4
@@ -1035,6 +1043,7 @@ curl -k "$URL/services/server/info"  # Not recommended
 | `--scoped` | *(auto)* | Auto-scoped when `-Apps` is specified |
 | `--skip-internal` | `-SkipInternal` | Skip `_internal` searches |
 | `--resume-collect FILE` | `-ResumeCollect FILE` | Resume from a previous archive |
+| `--proxy URL` | `-Proxy URL` | Route all connections through a proxy server |
 | `-d, --debug` | `-Debug_Mode` | Enable debug logging |
 | `--output DIR` | `-Output DIR` | Output directory |
 | `--help` | `-ShowHelp` | Show help message |

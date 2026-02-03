@@ -16,6 +16,23 @@ Pass a previous `.tar.gz` export to the script, and it will extract it, detect w
 #### PowerShell Edition
 A new `dynabridge-splunk-cloud-export.ps1` script provides identical functionality for Windows environments. It requires only PowerShell 5.1+ and has zero external dependencies (no Python, curl, or jq needed). See the [PowerShell Edition](#powershell-edition) section below for details.
 
+#### Proxy Support (`--proxy` / `-Proxy`)
+Both Cloud scripts now support routing all connections through a corporate proxy server. This is essential for enterprise environments where direct internet access to Splunk Cloud is blocked by a firewall or security policy.
+
+```bash
+# Bash: Route through corporate proxy
+./dynabridge-splunk-cloud-export.sh --proxy http://proxy.company.com:8080
+
+# PowerShell: Route through corporate proxy
+.\dynabridge-splunk-cloud-export.ps1 -Proxy "http://proxy.company.com:8080"
+```
+
+When a proxy is configured:
+- DNS resolution and TCP port connectivity tests are skipped (the proxy handles routing)
+- All `curl` / `Invoke-WebRequest` calls are routed through the proxy
+- If not provided via flag, the script prompts interactively during setup (default: No)
+- If connectivity fails, error messages include proxy-specific troubleshooting guidance
+
 ### Previous v4.2.4 Changes
 
 #### Two-Archive Anonymization (Preserves Original Data)
@@ -334,10 +351,11 @@ export SPLUNK_CLOUD_TOKEN="your-api-token"
 | `--output` | Output directory | `--output /path/to/output` |
 | `--rbac` | Enable RBAC/user collection (OFF by default) | `--rbac` |
 | `--resume-collect FILE` | Resume from previous .tar.gz archive **(NEW v4.3.0)** | `--resume-collect ./previous.tar.gz` |
+| `--proxy URL` | Route all connections through a proxy server **(NEW v4.3.0)** | `--proxy http://proxy:8080` |
 | `-d, --debug` | Enable verbose debug logging **(NEW v4.1.0)** | `--debug` |
 | `--help` | Show help message | `--help` |
 
-> **Note**: PowerShell equivalents use `-` prefix (e.g., `-Stack`, `-Token`, `-Rbac`, `-Usage`, `-ResumeCollect`)
+> **Note**: PowerShell equivalents use `-` prefix (e.g., `-Stack`, `-Token`, `-Rbac`, `-Usage`, `-ResumeCollect`, `-Proxy`)
 
 ### App-Scoped Export Mode (NEW in v4.1.0)
 
@@ -552,6 +570,7 @@ The `dynabridge-splunk-cloud-export.ps1` script provides the same functionality 
 | `--usage` | `-Usage` | `-Usage` |
 | `--no-usage` | `-NoUsage` | `-NoUsage` |
 | `--resume-collect` | `-ResumeCollect` | `-ResumeCollect ".\previous.tar.gz"` |
+| `--proxy` | `-Proxy` | `-Proxy "http://proxy:8080"` |
 | `--output` | `-Output` | `-Output "C:\exports"` |
 | `--debug` | `-Debug` | `-Debug` |
 | `--help` | `-Help` or `Get-Help` | `Get-Help .\dynabridge-splunk-cloud-export.ps1` |

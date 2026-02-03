@@ -286,6 +286,24 @@ Pass a previous <code>.tar.gz</code> export to the script, and it will extract i
 <p>
 A new <code>dynabridge-splunk-cloud-export.ps1</code> script provides identical functionality for Windows environments. It requires only PowerShell 5.1+ and has zero external dependencies (no Python, curl, or jq needed). See the <a href="#powershell-edition">PowerShell Edition</a> section below for details.
 </p>
+<h4>Proxy Support (<code>--proxy</code> / <code>-Proxy</code>)</h4>
+<p>
+Both Cloud scripts now support routing all connections through a corporate proxy server. This is essential for enterprise environments where direct internet access to Splunk Cloud is blocked by a firewall or security policy.
+</p>
+<pre><code class="language-bash"># Bash: Route through corporate proxy
+./dynabridge-splunk-cloud-export.sh --proxy http://proxy.company.com:8080
+
+# PowerShell: Route through corporate proxy
+.\dynabridge-splunk-cloud-export.ps1 -Proxy &quot;http://proxy.company.com:8080&quot;</code></pre>
+<p>
+When a proxy is configured:
+</p>
+<ul>
+<li>DNS resolution and TCP port connectivity tests are skipped (the proxy handles routing)</li>
+<li>All <code>curl</code> / <code>Invoke-WebRequest</code> calls are routed through the proxy</li>
+<li>If not provided via flag, the script prompts interactively during setup (default: No)</li>
+<li>If connectivity fails, error messages include proxy-specific troubleshooting guidance</li>
+</ul>
 <h3>Previous v4.2.4 Changes</h3>
 <h4>Two-Archive Anonymization (Preserves Original Data)</h4>
 <p>
@@ -588,11 +606,12 @@ export SPLUNK_CLOUD_TOKEN=&quot;your-api-token&quot;
 <tr><td><code>--output</code></td><td>Output directory</td><td><code>--output /path/to/output</code></td></tr>
 <tr><td><code>--rbac</code></td><td>Enable RBAC/user collection (OFF by default)</td><td><code>--rbac</code></td></tr>
 <tr><td><code>--resume-collect FILE</code></td><td>Resume from previous .tar.gz archive <strong>(NEW v4.3.0)</strong></td><td><code>--resume-collect ./previous.tar.gz</code></td></tr>
+<tr><td><code>--proxy URL</code></td><td>Route all connections through a proxy server <strong>(NEW v4.3.0)</strong></td><td><code>--proxy http://proxy:8080</code></td></tr>
 <tr><td><code>-d, --debug</code></td><td>Enable verbose debug logging <strong>(NEW v4.1.0)</strong></td><td><code>--debug</code></td></tr>
 <tr><td><code>--help</code></td><td>Show help message</td><td><code>--help</code></td></tr>
 </tbody>
 </table>
-<blockquote><p><strong>Note</strong>: PowerShell equivalents use <code>-</code> prefix (e.g., <code>-Stack</code>, <code>-Token</code>, <code>-Rbac</code>, <code>-Usage</code>, <code>-ResumeCollect</code>)</p></blockquote>
+<blockquote><p><strong>Note</strong>: PowerShell equivalents use <code>-</code> prefix (e.g., <code>-Stack</code>, <code>-Token</code>, <code>-Rbac</code>, <code>-Usage</code>, <code>-ResumeCollect</code>, <code>-Proxy</code>)</p></blockquote>
 <h3>App-Scoped Export Mode (NEW in v4.1.0)</h3>
 <p>
 For large Splunk Cloud environments, dramatically reduce export time by targeting specific apps:
@@ -808,6 +827,7 @@ The <code>dynabridge-splunk-cloud-export.ps1</code> script provides the same fun
 <tr><td><code>--usage</code></td><td><code>-Usage</code></td><td><code>-Usage</code></td></tr>
 <tr><td><code>--no-usage</code></td><td><code>-NoUsage</code></td><td><code>-NoUsage</code></td></tr>
 <tr><td><code>--resume-collect</code></td><td><code>-ResumeCollect</code></td><td><code>-ResumeCollect ".\previous.tar.gz"</code></td></tr>
+<tr><td><code>--proxy</code></td><td><code>-Proxy</code></td><td><code>-Proxy "http://proxy:8080"</code></td></tr>
 <tr><td><code>--output</code></td><td><code>-Output</code></td><td><code>-Output "C:\exports"</code></td></tr>
 <tr><td><code>--debug</code></td><td><code>-Debug</code></td><td><code>-Debug</code></td></tr>
 <tr><td><code>--help</code></td><td><code>-Help</code> or <code>Get-Help</code></td><td><code>Get-Help .\dynabridge-splunk-cloud-export.ps1</code></td></tr>
