@@ -527,7 +527,8 @@ function Write-Line {
         [string]$Char = [string][char]0x2500,
         [int]$Width = 72
     )
-    Write-Host ($Char * $Width)
+    # Use [string]::new() for PowerShell 5.1 compatibility (string multiplication only works in PS 7+)
+    Write-Host ([string]::new($Char[0], $Width))
 }
 
 # Print a box header
@@ -536,10 +537,14 @@ function Write-BoxHeader {
     $width = 72
     $padding = [math]::Max(0, [math]::Floor(($width - $Title.Length - 4) / 2))
     $rightPad = [math]::Max(0, $width - $padding - $Title.Length - 4)
+    # Use [string]::new() for PowerShell 5.1 compatibility
+    $hLine = [string]::new([char]0x2500, $width)
+    $padSpaces = [string]::new(' ', $padding)
+    $rightSpaces = [string]::new(' ', $rightPad)
     Write-Host ""
-    Write-Host "${Script:CYAN}${Script:BOX_TL}$($Script:BOX_H * $width)${Script:BOX_TR}${Script:NC}"
-    Write-Host "${Script:CYAN}${Script:BOX_V}${Script:NC}$(' ' * $padding)  ${Script:BOLD}${Script:WHITE}$Title${Script:NC}  $(' ' * $rightPad)${Script:CYAN}${Script:BOX_V}${Script:NC}"
-    Write-Host "${Script:CYAN}${Script:BOX_T}$($Script:BOX_H * $width)${Script:BOX_B}${Script:NC}"
+    Write-Host "${Script:CYAN}${Script:BOX_TL}${hLine}${Script:BOX_TR}${Script:NC}"
+    Write-Host "${Script:CYAN}${Script:BOX_V}${Script:NC}${padSpaces}  ${Script:BOLD}${Script:WHITE}$Title${Script:NC}  ${rightSpaces}${Script:CYAN}${Script:BOX_V}${Script:NC}"
+    Write-Host "${Script:CYAN}${Script:BOX_T}${hLine}${Script:BOX_B}${Script:NC}"
 }
 
 # Print a box content line
@@ -549,13 +554,17 @@ function Write-BoxLine {
     # Strip ANSI codes for length calculation
     $stripped = $Content -replace '\e\[[0-9;]*m', ''
     $padding = [math]::Max(0, $width - $stripped.Length)
-    Write-Host "${Script:CYAN}${Script:BOX_V}${Script:NC} $Content$(' ' * $padding)${Script:CYAN}${Script:BOX_V}${Script:NC}"
+    # Use [string]::new() for PowerShell 5.1 compatibility
+    $padSpaces = [string]::new(' ', $padding)
+    Write-Host "${Script:CYAN}${Script:BOX_V}${Script:NC} $Content${padSpaces}${Script:CYAN}${Script:BOX_V}${Script:NC}"
 }
 
 # Print a box footer
 function Write-BoxFooter {
     $width = 72
-    Write-Host "${Script:CYAN}${Script:BOX_BL}$($Script:BOX_H * $width)${Script:BOX_BR}${Script:NC}"
+    # Use [string]::new() for PowerShell 5.1 compatibility
+    $hLine = [string]::new([char]0x2500, $width)
+    Write-Host "${Script:CYAN}${Script:BOX_BL}${hLine}${Script:BOX_BR}${Script:NC}"
 }
 
 # Print an info box with multiple lines
@@ -575,16 +584,20 @@ function Write-InfoBox {
 function Write-WhyBox {
     param([string[]]$Lines)
     $title = "WHY WE ASK"
+    # Use [string]::new() for PowerShell 5.1 compatibility
+    $hLine = [string]::new([char]0x2500, 68)
+    $titlePad = [string]::new(' ', 57)
     Write-Host ""
-    Write-Host "  ${Script:MAGENTA}$([char]0x250C)$([string][char]0x2500 * 68)$([char]0x2510)${Script:NC}"
-    Write-Host "  ${Script:MAGENTA}${Script:BOX_V}${Script:NC} ${Script:BOLD}${Script:MAGENTA}$title${Script:NC}$(' ' * (57))${Script:MAGENTA}${Script:BOX_V}${Script:NC}"
-    Write-Host "  ${Script:MAGENTA}$([char]0x251C)$([string][char]0x2500 * 68)$([char]0x2524)${Script:NC}"
+    Write-Host "  ${Script:MAGENTA}$([char]0x250C)${hLine}$([char]0x2510)${Script:NC}"
+    Write-Host "  ${Script:MAGENTA}${Script:BOX_V}${Script:NC} ${Script:BOLD}${Script:MAGENTA}$title${Script:NC}${titlePad}${Script:MAGENTA}${Script:BOX_V}${Script:NC}"
+    Write-Host "  ${Script:MAGENTA}$([char]0x251C)${hLine}$([char]0x2524)${Script:NC}"
     foreach ($line in $Lines) {
         $stripped = $line -replace '\e\[[0-9;]*m', ''
         $padding = [math]::Max(0, 66 - $stripped.Length)
-        Write-Host "  ${Script:MAGENTA}$([char]0x2502)${Script:NC}  $line$(' ' * $padding)${Script:MAGENTA}$([char]0x2502)${Script:NC}"
+        $padSpaces = [string]::new(' ', $padding)
+        Write-Host "  ${Script:MAGENTA}$([char]0x2502)${Script:NC}  $line${padSpaces}${Script:MAGENTA}$([char]0x2502)${Script:NC}"
     }
-    Write-Host "  ${Script:MAGENTA}$([char]0x2514)$([string][char]0x2500 * 68)$([char]0x2518)${Script:NC}"
+    Write-Host "  ${Script:MAGENTA}$([char]0x2514)${hLine}$([char]0x2518)${Script:NC}"
 }
 
 # Print recommendation
@@ -723,7 +736,10 @@ function Update-Progress {
     $barWidth = 30
     $filled = [math]::Floor(($percent * $barWidth) / 100)
     $empty = $barWidth - $filled
-    $bar = ([string][char]0x2588 * $filled) + ([string][char]0x2591 * $empty)
+    # Use [string]::new() for PowerShell 5.1 compatibility
+    $filledBar = if ($filled -gt 0) { [string]::new([char]0x2588, $filled) } else { "" }
+    $emptyBar = if ($empty -gt 0) { [string]::new([char]0x2591, $empty) } else { "" }
+    $bar = $filledBar + $emptyBar
 
     Write-Host "${Script:CYAN}$([char]0x2502)${Script:NC} ${Script:GREEN}${bar}${Script:NC} ${percent}% [${Script:PROGRESS_CURRENT}/${Script:PROGRESS_TOTAL}] ${Script:GRAY}ETA: ${eta}${Script:NC}"
 }
@@ -1379,9 +1395,9 @@ function Show-ExportTimingStats {
     $seconds = [math]::Floor($duration % 60)
 
     Write-Host ""
-    Write-Host "${Script:CYAN}${Script:BOX_TL}$($Script:BOX_H * 74)${Script:BOX_TR}${Script:NC}"
+    Write-Host "${Script:CYAN}${Script:BOX_TL}$([string]::new($Script:BOX_H, 74))${Script:BOX_TR}${Script:NC}"
     Write-Host "${Script:CYAN}${Script:BOX_V}${Script:NC}                    ${Script:WHITE}EXPORT TIMING STATISTICS${Script:NC}                            ${Script:CYAN}${Script:BOX_V}${Script:NC}"
-    Write-Host "${Script:CYAN}${Script:BOX_T}$($Script:BOX_H * 74)${Script:BOX_B}${Script:NC}"
+    Write-Host "${Script:CYAN}${Script:BOX_T}$([string]::new($Script:BOX_H, 74))${Script:BOX_B}${Script:NC}"
 
     if ($hours -gt 0) {
         $durationStr = "${hours}h ${minutes}m ${seconds}s"
@@ -1398,7 +1414,7 @@ function Show-ExportTimingStats {
     Write-Host ("{0}{1}{2}  Rate Limit Hits:       {3,-46}{0}{1}{2}" -f $Script:CYAN, $Script:BOX_V, $Script:NC, $Script:STATS_RATE_LIMITS)
     Write-Host ("{0}{1}{2}  Batches Completed:     {3,-46}{0}{1}{2}" -f $Script:CYAN, $Script:BOX_V, $Script:NC, $Script:STATS_BATCHES)
 
-    Write-Host "${Script:CYAN}${Script:BOX_BL}$($Script:BOX_H * 74)${Script:BOX_BR}${Script:NC}"
+    Write-Host "${Script:CYAN}${Script:BOX_BL}$([string]::new($Script:BOX_H, 74))${Script:BOX_BR}${Script:NC}"
 }
 
 # =============================================================================
@@ -1412,13 +1428,13 @@ function Test-SplunkConnectivity {
     $hostname = ($Url -replace 'https://', '') -replace ':.*', ''
 
     Write-Host ""
-    Write-Host "${Script:CYAN}${Script:BOX_TL}$($Script:BOX_H * 74)${Script:BOX_TR}${Script:NC}"
+    Write-Host "${Script:CYAN}${Script:BOX_TL}$([string]::new($Script:BOX_H, 74))${Script:BOX_TR}${Script:NC}"
     Write-Host "${Script:CYAN}${Script:BOX_V}${Script:NC}  ${Script:BOLD}CONNECTIVITY TEST - VERBOSE DIAGNOSTICS${Script:NC}                                  ${Script:CYAN}${Script:BOX_V}${Script:NC}"
-    Write-Host "${Script:CYAN}${Script:BOX_T}$($Script:BOX_H * 74)${Script:BOX_B}${Script:NC}"
+    Write-Host "${Script:CYAN}${Script:BOX_T}$([string]::new($Script:BOX_H, 74))${Script:BOX_B}${Script:NC}"
     Write-Host "${Script:CYAN}${Script:BOX_V}${Script:NC}  Target URL: ${Script:WHITE}${testUrl}${Script:NC}"
     Write-Host "${Script:CYAN}${Script:BOX_V}${Script:NC}  Hostname:   ${Script:WHITE}${hostname}${Script:NC}"
     Write-Host "${Script:CYAN}${Script:BOX_V}${Script:NC}  Port:       ${Script:WHITE}8089${Script:NC}"
-    Write-Host "${Script:CYAN}${Script:BOX_BL}$($Script:BOX_H * 74)${Script:BOX_BR}${Script:NC}"
+    Write-Host "${Script:CYAN}${Script:BOX_BL}$([string]::new($Script:BOX_H, 74))${Script:BOX_BR}${Script:NC}"
     Write-Host ""
 
     # =========================================================================
@@ -1512,20 +1528,20 @@ function Test-SplunkConnectivity {
     # =========================================================================
     # RESULTS SUMMARY
     # =========================================================================
-    Write-Host "${Script:CYAN}${Script:BOX_TL}$($Script:BOX_H * 74)${Script:BOX_TR}${Script:NC}"
+    Write-Host "${Script:CYAN}${Script:BOX_TL}$([string]::new($Script:BOX_H, 74))${Script:BOX_TR}${Script:NC}"
     Write-Host "${Script:CYAN}${Script:BOX_V}${Script:NC}  ${Script:BOLD}CONNECTION TEST RESULTS${Script:NC}                                                  ${Script:CYAN}${Script:BOX_V}${Script:NC}"
-    Write-Host "${Script:CYAN}${Script:BOX_T}$($Script:BOX_H * 74)${Script:BOX_B}${Script:NC}"
+    Write-Host "${Script:CYAN}${Script:BOX_T}$([string]::new($Script:BOX_H, 74))${Script:BOX_B}${Script:NC}"
     Write-Host "${Script:CYAN}${Script:BOX_V}${Script:NC}  HTTP Response:     ${Script:WHITE}${httpCode}${Script:NC}"
     Write-Host "${Script:CYAN}${Script:BOX_V}${Script:NC}  Total Time:        ${Script:WHITE}${totalTime}s${Script:NC}"
-    Write-Host "${Script:CYAN}${Script:BOX_BL}$($Script:BOX_H * 74)${Script:BOX_BR}${Script:NC}"
+    Write-Host "${Script:CYAN}${Script:BOX_BL}$([string]::new($Script:BOX_H, 74))${Script:BOX_BR}${Script:NC}"
     Write-Host ""
 
     # Interpret results
     if ($httpCode -eq 0) {
-        Write-Host "${Script:RED}${Script:BOX_TL}$($Script:BOX_H * 74)${Script:BOX_TR}${Script:NC}"
+        Write-Host "${Script:RED}${Script:BOX_TL}$([string]::new($Script:BOX_H, 74))${Script:BOX_TR}${Script:NC}"
         Write-Host "${Script:RED}${Script:BOX_V}${Script:NC}  ${Script:BOLD}${Script:RED}ERROR: Cannot connect to Splunk Cloud instance${Script:NC}"
         Write-Host "${Script:RED}${Script:BOX_V}${Script:NC}  ${Script:DIM}Check network connectivity, firewall rules, and VPN status${Script:NC}"
-        Write-Host "${Script:RED}${Script:BOX_BL}$($Script:BOX_H * 74)${Script:BOX_BR}${Script:NC}"
+        Write-Host "${Script:RED}${Script:BOX_BL}$([string]::new($Script:BOX_H, 74))${Script:BOX_BR}${Script:NC}"
         Write-Error2 "Cannot connect to Splunk Cloud instance"
         return $false
     }
@@ -1652,7 +1668,7 @@ function Show-Banner {
         Clear-Host
     }
     Write-Host ""
-    Write-Host "${Script:CYAN}${Script:BOX_TL}$($Script:BOX_H * 78)${Script:BOX_TR}${Script:NC}"
+    Write-Host "${Script:CYAN}${Script:BOX_TL}$([string]::new($Script:BOX_H, 78))${Script:BOX_TR}${Script:NC}"
     Write-Host "${Script:CYAN}${Script:BOX_V}${Script:NC}                                                                              ${Script:CYAN}${Script:BOX_V}${Script:NC}"
     Write-Host "${Script:CYAN}${Script:BOX_V}${Script:NC}  ${Script:BOLD}${Script:WHITE}$([char]0x2588)$([char]0x2588)$([char]0x2588)$([char]0x2588)$([char]0x2588)$([char]0x2588)  $([char]0x2588)$([char]0x2588)   $([char]0x2588)$([char]0x2588) $([char]0x2588)$([char]0x2588)$([char]0x2588)   $([char]0x2588)$([char]0x2588)  $([char]0x2588)$([char]0x2588)$([char]0x2588)$([char]0x2588)$([char]0x2588)  $([char]0x2588)$([char]0x2588)$([char]0x2588)$([char]0x2588)$([char]0x2588)$([char]0x2588) $([char]0x2588)$([char]0x2588)$([char]0x2588)$([char]0x2588)$([char]0x2588)$([char]0x2588)  $([char]0x2588)$([char]0x2588) $([char]0x2588)$([char]0x2588)$([char]0x2588)$([char]0x2588)$([char]0x2588)$([char]0x2588)  $([char]0x2588)$([char]0x2588)$([char]0x2588)$([char]0x2588)$([char]0x2588)$([char]0x2588)  $([char]0x2588)$([char]0x2588)$([char]0x2588)$([char]0x2588)$([char]0x2588)$([char]0x2588)$([char]0x2588)${Script:NC} ${Script:CYAN}${Script:BOX_V}${Script:NC}"
     Write-Host "${Script:CYAN}${Script:BOX_V}${Script:NC}                                                                              ${Script:CYAN}${Script:BOX_V}${Script:NC}"
@@ -1664,7 +1680,7 @@ function Show-Banner {
     Write-Host "${Script:CYAN}${Script:BOX_V}${Script:NC}   ${Script:DIM}Developed for Dynatrace One by Enterprise Solutions & Architecture${Script:NC}      ${Script:CYAN}${Script:BOX_V}${Script:NC}"
     Write-Host "${Script:CYAN}${Script:BOX_V}${Script:NC}                  ${Script:DIM}An ACE Services Division of Dynatrace${Script:NC}                    ${Script:CYAN}${Script:BOX_V}${Script:NC}"
     Write-Host "${Script:CYAN}${Script:BOX_V}${Script:NC}                                                                              ${Script:CYAN}${Script:BOX_V}${Script:NC}"
-    Write-Host "${Script:CYAN}${Script:BOX_BL}$($Script:BOX_H * 78)${Script:BOX_BR}${Script:NC}"
+    Write-Host "${Script:CYAN}${Script:BOX_BL}$([string]::new($Script:BOX_H, 78))${Script:BOX_BR}${Script:NC}"
     Write-Host ""
 }
 
@@ -1709,10 +1725,10 @@ function Show-Introduction {
 
 function Show-PreflightChecklist {
     Write-Host ""
-    Write-Host "${Script:CYAN}${Script:BOX_TL}$($Script:BOX_H * 78)${Script:BOX_TR}${Script:NC}"
+    Write-Host "${Script:CYAN}${Script:BOX_TL}$([string]::new($Script:BOX_H, 78))${Script:BOX_TR}${Script:NC}"
     Write-Host "${Script:CYAN}${Script:BOX_V}${Script:NC}                     ${Script:BOLD}${Script:WHITE}PRE-FLIGHT CHECKLIST${Script:NC}                                    ${Script:CYAN}${Script:BOX_V}${Script:NC}"
     Write-Host "${Script:CYAN}${Script:BOX_V}${Script:NC}         ${Script:DIM}Please confirm you have the following before continuing${Script:NC}            ${Script:CYAN}${Script:BOX_V}${Script:NC}"
-    Write-Host "${Script:CYAN}${Script:BOX_T}$($Script:BOX_H * 78)${Script:BOX_B}${Script:NC}"
+    Write-Host "${Script:CYAN}${Script:BOX_T}$([string]::new($Script:BOX_H, 78))${Script:BOX_B}${Script:NC}"
     Write-Host "${Script:CYAN}${Script:BOX_V}${Script:NC}                                                                              ${Script:CYAN}${Script:BOX_V}${Script:NC}"
     Write-Host "${Script:CYAN}${Script:BOX_V}${Script:NC}  ${Script:BOLD}${Script:GREEN}SPLUNK CLOUD ACCESS:${Script:NC}                                                      ${Script:CYAN}${Script:BOX_V}${Script:NC}"
     Write-Host "${Script:CYAN}${Script:BOX_V}${Script:NC}    $([char]0x25A1)  Splunk Cloud stack URL (e.g., your-company.splunkcloud.com)          ${Script:CYAN}${Script:BOX_V}${Script:NC}"
@@ -1728,7 +1744,7 @@ function Show-PreflightChecklist {
     Write-Host "${Script:CYAN}${Script:BOX_V}${Script:NC}    $([char]0x25A1)  tar.exe (built-in on Windows 10 1803+)                               ${Script:CYAN}${Script:BOX_V}${Script:NC}"
     Write-Host "${Script:CYAN}${Script:BOX_V}${Script:NC}    $([char]0x25A1)  ~100MB disk space for export                                         ${Script:CYAN}${Script:BOX_V}${Script:NC}"
     Write-Host "${Script:CYAN}${Script:BOX_V}${Script:NC}                                                                              ${Script:CYAN}${Script:BOX_V}${Script:NC}"
-    Write-Host "${Script:CYAN}${Script:BOX_T}$($Script:BOX_H * 78)${Script:BOX_B}${Script:NC}"
+    Write-Host "${Script:CYAN}${Script:BOX_T}$([string]::new($Script:BOX_H, 78))${Script:BOX_B}${Script:NC}"
     Write-Host "${Script:CYAN}${Script:BOX_V}${Script:NC}  ${Script:BOLD}${Script:GREEN}DATA PRIVACY & SECURITY:${Script:NC}                                                   ${Script:CYAN}${Script:BOX_V}${Script:NC}"
     Write-Host "${Script:CYAN}${Script:BOX_V}${Script:NC}                                                                              ${Script:CYAN}${Script:BOX_V}${Script:NC}"
     Write-Host "${Script:CYAN}${Script:BOX_V}${Script:NC}  ${Script:BOLD}We do NOT collect or export:${Script:NC}                                              ${Script:CYAN}${Script:BOX_V}${Script:NC}"
@@ -1742,10 +1758,10 @@ function Show-PreflightChecklist {
     Write-Host "${Script:CYAN}${Script:BOX_V}${Script:NC}    ${Script:GREEN}$([char]0x2713)${Script:NC}  secret = [REDACTED] in outputs.conf                                  ${Script:CYAN}${Script:BOX_V}${Script:NC}"
     Write-Host "${Script:CYAN}${Script:BOX_V}${Script:NC}    ${Script:GREEN}$([char]0x2713)${Script:NC}  pass4SymmKey = [REDACTED] in server.conf                             ${Script:CYAN}${Script:BOX_V}${Script:NC}"
     Write-Host "${Script:CYAN}${Script:BOX_V}${Script:NC}                                                                              ${Script:CYAN}${Script:BOX_V}${Script:NC}"
-    Write-Host "${Script:CYAN}${Script:BOX_T}$($Script:BOX_H * 78)${Script:BOX_B}${Script:NC}"
+    Write-Host "${Script:CYAN}${Script:BOX_T}$([string]::new($Script:BOX_H, 78))${Script:BOX_B}${Script:NC}"
     Write-Host "${Script:CYAN}${Script:BOX_V}${Script:NC}  ${Script:BOLD}${Script:MAGENTA}TIP:${Script:NC} If you don't have all items, you can still proceed - the script     ${Script:CYAN}${Script:BOX_V}${Script:NC}"
     Write-Host "${Script:CYAN}${Script:BOX_V}${Script:NC}       will verify each requirement and provide specific guidance.          ${Script:CYAN}${Script:BOX_V}${Script:NC}"
-    Write-Host "${Script:CYAN}${Script:BOX_BL}$($Script:BOX_H * 78)${Script:BOX_BR}${Script:NC}"
+    Write-Host "${Script:CYAN}${Script:BOX_BL}$([string]::new($Script:BOX_H, 78))${Script:BOX_BR}${Script:NC}"
     Write-Host ""
 
     # Quick system check
@@ -1998,18 +2014,20 @@ function Find-SplunkEnvironment {
         $userCount = @($usersResponse.entry).Count
     }
 
+    # Use [string]::new() for PowerShell 5.1 compatibility
+    $hLine = [string]::new([char]0x2500, 68)
     Write-Host ""
-    Write-Host "  $([char]0x250C)$([string][char]0x2500 * 68)$([char]0x2510)"
-    Write-Host "  $([char]0x2502) ${Script:BOLD}Detected Environment:${Script:NC}$(' ' * 46)$([char]0x2502)"
-    Write-Host "  $([char]0x251C)$([string][char]0x2500 * 68)$([char]0x2524)"
-    Write-Host ("  $([char]0x2502)   Stack:      ${Script:GREEN}{0}${Script:NC}{1}$([char]0x2502)" -f $Script:SPLUNK_STACK, (' ' * [math]::Max(0, 40 - $Script:SPLUNK_STACK.Length)))
-    Write-Host ("  $([char]0x2502)   Type:       ${Script:GREEN}Splunk Cloud ({0})${Script:NC}{1}$([char]0x2502)" -f $Script:CLOUD_TYPE, (' ' * [math]::Max(0, 29 - $Script:CLOUD_TYPE.Length)))
-    Write-Host ("  $([char]0x2502)   Version:    ${Script:GREEN}{0}${Script:NC}{1}$([char]0x2502)" -f $Script:SPLUNK_VERSION, (' ' * [math]::Max(0, 40 - $Script:SPLUNK_VERSION.Length)))
+    Write-Host "  $([char]0x250C)${hLine}$([char]0x2510)"
+    Write-Host "  $([char]0x2502) ${Script:BOLD}Detected Environment:${Script:NC}$([string]::new(' ', 46))$([char]0x2502)"
+    Write-Host "  $([char]0x251C)${hLine}$([char]0x2524)"
+    Write-Host ("  $([char]0x2502)   Stack:      ${Script:GREEN}{0}${Script:NC}{1}$([char]0x2502)" -f $Script:SPLUNK_STACK, ([string]::new(' ', [math]::Max(0, 40 - $Script:SPLUNK_STACK.Length))))
+    Write-Host ("  $([char]0x2502)   Type:       ${Script:GREEN}Splunk Cloud ({0})${Script:NC}{1}$([char]0x2502)" -f $Script:CLOUD_TYPE, ([string]::new(' ', [math]::Max(0, 29 - $Script:CLOUD_TYPE.Length))))
+    Write-Host ("  $([char]0x2502)   Version:    ${Script:GREEN}{0}${Script:NC}{1}$([char]0x2502)" -f $Script:SPLUNK_VERSION, ([string]::new(' ', [math]::Max(0, 40 - $Script:SPLUNK_VERSION.Length))))
     $guidDisplay = if ($Script:SERVER_GUID.Length -gt 25) { $Script:SERVER_GUID.Substring(0, 25) + "..." } else { $Script:SERVER_GUID }
-    Write-Host "  $([char]0x2502)   GUID:       ${Script:GREEN}${guidDisplay}${Script:NC}$(' ' * [math]::Max(0, 37 - $guidDisplay.Length))$([char]0x2502)"
-    Write-Host ("  $([char]0x2502)   Apps:       ${Script:GREEN}{0} installed${Script:NC}{1}$([char]0x2502)" -f $appCount, (' ' * [math]::Max(0, 36 - $appCount.ToString().Length)))
-    Write-Host ("  $([char]0x2502)   Users:      ${Script:GREEN}{0}${Script:NC}{1}$([char]0x2502)" -f $userCount, (' ' * [math]::Max(0, 45 - $userCount.ToString().Length)))
-    Write-Host "  $([char]0x2514)$([string][char]0x2500 * 68)$([char]0x2518)"
+    Write-Host "  $([char]0x2502)   GUID:       ${Script:GREEN}${guidDisplay}${Script:NC}$([string]::new(' ', [math]::Max(0, 37 - $guidDisplay.Length)))$([char]0x2502)"
+    Write-Host ("  $([char]0x2502)   Apps:       ${Script:GREEN}{0} installed${Script:NC}{1}$([char]0x2502)" -f $appCount, ([string]::new(' ', [math]::Max(0, 36 - $appCount.ToString().Length))))
+    Write-Host ("  $([char]0x2502)   Users:      ${Script:GREEN}{0}${Script:NC}{1}$([char]0x2502)" -f $userCount, ([string]::new(' ', [math]::Max(0, 45 - $userCount.ToString().Length))))
+    Write-Host "  $([char]0x2514)${hLine}$([char]0x2518)"
 
     Write-Host ""
     if (-not (Read-YesNo "  Is this the correct environment?")) {
@@ -3271,10 +3289,10 @@ function Export-UsageAnalytics {
     if (-not $Script:COLLECT_USAGE) { return }
 
     Write-Host ""
-    Write-Host "  ${Script:WHITE}$([string][char]0x2501 * 68)${Script:NC}"
+    Write-Host "  ${Script:WHITE}$([string]::new([char]0x2501, 68))${Script:NC}"
     Write-Host "  ${Script:CYAN}USAGE INTELLIGENCE COLLECTION${Script:NC}"
     Write-Host "  ${Script:DIM}Gathering comprehensive usage data for migration prioritization${Script:NC}"
-    Write-Host "  ${Script:WHITE}$([string][char]0x2501 * 68)${Script:NC}"
+    Write-Host "  ${Script:WHITE}$([string]::new([char]0x2501, 68))${Script:NC}"
     Write-Host ""
 
     if ($Script:SKIP_INTERNAL) {
@@ -4229,9 +4247,9 @@ function Invoke-ExportAnonymization {
 
     # Report statistics
     Write-Host ""
-    Write-Host "  ${Script:GREEN}$([string][char]0x2501 * 68)${Script:NC}"
+    Write-Host "  ${Script:GREEN}$([string]::new([char]0x2501, 68))${Script:NC}"
     Write-Host "  ${Script:WHITE}Anonymization Summary${Script:NC}"
-    Write-Host "  ${Script:GREEN}$([string][char]0x2501 * 68)${Script:NC}"
+    Write-Host "  ${Script:GREEN}$([string]::new([char]0x2501, 68))${Script:NC}"
     Write-Host ""
     Write-Host "    Files processed:        ${Script:GREEN}${totalFiles}${Script:NC}"
     Write-Host "    Unique emails mapped:   ${Script:GREEN}$($Script:ANON_EMAIL_COUNTER)${Script:NC}"
@@ -4325,9 +4343,9 @@ function New-ExportArchive {
         }
 
         Write-Host ""
-        Write-Host "  ${Script:GREEN}$([string][char]0x2501 * 68)${Script:NC}"
+        Write-Host "  ${Script:GREEN}$([string]::new([char]0x2501, 68))${Script:NC}"
         Write-Host "  ${Script:GREEN}  ARCHIVE CREATED${Script:NC}"
-        Write-Host "  ${Script:GREEN}$([string][char]0x2501 * 68)${Script:NC}"
+        Write-Host "  ${Script:GREEN}$([string]::new([char]0x2501, 68))${Script:NC}"
         Write-Host ""
         Write-Host "  ${Script:BOLD}Archive:${Script:NC} $(Get-Location)/$archiveName"
         Write-Host "  ${Script:BOLD}Size:${Script:NC}    $sizeDisplay"
@@ -4347,9 +4365,9 @@ function New-MaskedArchive {
     $maskedDir = "$($Script:EXPORT_DIR)_masked"
 
     Write-Host ""
-    Write-Host "  ${Script:CYAN}$([string][char]0x2501 * 68)${Script:NC}"
+    Write-Host "  ${Script:CYAN}$([string]::new([char]0x2501, 68))${Script:NC}"
     Write-Host "  ${Script:CYAN}  CREATING MASKED (ANONYMIZED) ARCHIVE${Script:NC}"
-    Write-Host "  ${Script:CYAN}$([string][char]0x2501 * 68)${Script:NC}"
+    Write-Host "  ${Script:CYAN}$([string]::new([char]0x2501, 68))${Script:NC}"
     Write-Host ""
     Write-Host "  ${Script:DIM}The original archive has been preserved.${Script:NC}"
     Write-Host "  ${Script:DIM}Now creating a separate anonymized copy...${Script:NC}"
@@ -4411,9 +4429,9 @@ function New-MaskedArchive {
         Remove-Item -Path $maskedDir -Recurse -Force -ErrorAction SilentlyContinue
 
         Write-Host ""
-        Write-Host "  ${Script:GREEN}$([string][char]0x2501 * 68)${Script:NC}"
+        Write-Host "  ${Script:GREEN}$([string]::new([char]0x2501, 68))${Script:NC}"
         Write-Host "  ${Script:GREEN}  MASKED ARCHIVE CREATED${Script:NC}"
-        Write-Host "  ${Script:GREEN}$([string][char]0x2501 * 68)${Script:NC}"
+        Write-Host "  ${Script:GREEN}$([string]::new([char]0x2501, 68))${Script:NC}"
         Write-Host ""
         Write-Host "  ${Script:BOLD}Masked Archive:${Script:NC} $(Get-Location)/$maskedArchive"
         Write-Host "  ${Script:BOLD}Size:${Script:NC}           $sizeDisplay"
@@ -4629,9 +4647,9 @@ function Show-ExportSummary {
     # Show prominent error warning
     if ($Script:STATS_ERRORS -gt 0) {
         Write-Host ""
-        Write-Host "${Script:YELLOW}$([string][char]0x2550 * 70)${Script:NC}"
+        Write-Host "${Script:YELLOW}$([string]::new([char]0x2550, 70))${Script:NC}"
         Write-Host "${Script:YELLOW}$([char]0x2551)${Script:NC}  ${Script:WHITE}$([char]0x26A0)  EXPORT COMPLETED WITH $($Script:STATS_ERRORS) ERROR(S)${Script:NC}"
-        Write-Host "${Script:YELLOW}$([string][char]0x2550 * 70)${Script:NC}"
+        Write-Host "${Script:YELLOW}$([string]::new([char]0x2550, 70))${Script:NC}"
         Write-Host ""
         Write-Host "  The export is still usable but some analytics data may be missing."
         Write-Host ""
