@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    DynaBridge Splunk Cloud Export Script v4.2.6 (PowerShell Edition)
+    DynaBridge Splunk Cloud Export Script v4.3.0 (PowerShell Edition)
 
 .DESCRIPTION
     REST API-Only Data Collection for Splunk Cloud Migration to Dynatrace.
@@ -13,13 +13,19 @@
     use dynabridge-splunk-export.sh instead.
 
     This is a functionally identical PowerShell conversion of
-    dynabridge-splunk-cloud-export.sh v4.2.6 for Windows environments.
+    dynabridge-splunk-cloud-export.sh v4.3.0 for Windows environments.
 
     REQUIREMENTS:
       - PowerShell 5.1+ (Windows PowerShell) or PowerShell 7+ (PowerShell Core)
       - Windows 10 1803+ (for built-in tar.exe)
       - Network access to your Splunk Cloud instance (port 8089)
       - No external dependencies (no Python, no jq, no curl)
+
+    v4.3.0 Changes:
+      - Added -Proxy parameter for environments requiring proxy servers
+      - Added -ResumeCollect parameter to resume interrupted exports from .tar.gz archive
+      - Increased max timeout from 4 hours to 12 hours for very large environments
+      - Interactive proxy prompt with default No
 
     v4.2.6 Changes (PowerShell Edition):
       - Zero external dependencies - pure PowerShell implementation
@@ -71,6 +77,12 @@
 
 .PARAMETER SkipAnonymization
     Skip data anonymization step
+
+.PARAMETER Proxy
+    Route all connections through a proxy server (e.g., http://proxy.company.com:8080)
+
+.PARAMETER ResumeCollect
+    Resume a previous interrupted export from a .tar.gz archive
 
 .PARAMETER SkipInternal
     Skip _internal index searches (for restricted Splunk Cloud environments)
@@ -139,6 +151,12 @@ param(
     [Parameter(HelpMessage = "Skip data anonymization")]
     [switch]$SkipAnonymization,
 
+    [Parameter(HelpMessage = "Route all connections through a proxy server")]
+    [string]$Proxy = "",
+
+    [Parameter(HelpMessage = "Resume a previous interrupted export from a .tar.gz archive")]
+    [string]$ResumeCollect = "",
+
     [Parameter(HelpMessage = "Skip _internal index searches")]
     [switch]$SkipInternal,
 
@@ -153,7 +171,7 @@ param(
 # SCRIPT CONFIGURATION
 # =============================================================================
 
-$Script:SCRIPT_VERSION = "4.2.6"
+$Script:SCRIPT_VERSION = "4.3.0"
 $Script:SCRIPT_NAME = "DynaBridge Splunk Cloud Export (PowerShell)"
 
 # Detect PowerShell version for compatibility
@@ -261,6 +279,13 @@ $Script:SKIP_INTERNAL = $false
 # App-scoped collection mode
 $Script:SCOPE_TO_APPS = $false
 
+# Proxy settings
+$Script:PROXY_URL = ""
+
+# Resume settings
+$Script:RESUME_ARCHIVE = ""
+$Script:RESUME_MODE = $false
+
 # Non-interactive mode flag
 $Script:NON_INTERACTIVE = $false
 
@@ -298,7 +323,7 @@ $Script:CONNECT_TIMEOUT = if ($env:CONNECT_TIMEOUT) { [int]$env:CONNECT_TIMEOUT 
 $Script:API_TIMEOUT = if ($env:API_TIMEOUT) { [int]$env:API_TIMEOUT } else { 120 }
 
 # Total runtime limit
-$Script:MAX_TOTAL_TIME = if ($env:MAX_TOTAL_TIME) { [int]$env:MAX_TOTAL_TIME } else { 14400 }
+$Script:MAX_TOTAL_TIME = if ($env:MAX_TOTAL_TIME) { [int]$env:MAX_TOTAL_TIME } else { 43200 }  # 12 hours
 
 # Retry settings
 $Script:MAX_RETRIES = if ($env:MAX_RETRIES) { [int]$env:MAX_RETRIES } else { 3 }
@@ -389,6 +414,13 @@ if ($NonInteractive) {
 }
 if ($SkipAnonymization) {
     $Script:ANONYMIZE_DATA = $false
+}
+if ($Proxy) {
+    $Script:PROXY_URL = $Proxy
+}
+if ($ResumeCollect) {
+    $Script:RESUME_ARCHIVE = $ResumeCollect
+    $Script:RESUME_MODE = $true
 }
 if ($SkipInternal) {
     $Script:SKIP_INTERNAL = $true
@@ -1025,6 +1057,11 @@ function Invoke-SplunkApi {
                 $params["SkipCertificateCheck"] = $true
             }
 
+            # Proxy support (v4.3.0)
+            if ($Script:PROXY_URL) {
+                $params["Proxy"] = $Script:PROXY_URL
+            }
+
             if ($Method -eq "GET") {
                 # For GET requests, data goes in URL query string (not body)
                 if ($Data) {
@@ -1385,52 +1422,57 @@ function Test-SplunkConnectivity {
     Write-Host ""
 
     # =========================================================================
-    # STEP 1: DNS Resolution Test
+    # STEP 1 & 2: DNS and TCP tests (skipped when proxy is configured)
     # =========================================================================
-    Write-Host "${Script:YELLOW}[STEP 1/3] Testing DNS Resolution...${Script:NC}"
-    try {
-        $dnsResult = [System.Net.Dns]::GetHostAddresses($hostname)
-        if ($dnsResult.Count -gt 0) {
-            $dnsIp = $dnsResult[0].IPAddressToString
-            Write-Host "  ${Script:GREEN}$([char]0x2713) DNS resolved: $hostname -> $dnsIp${Script:NC}"
-        } else {
+    if ($Script:PROXY_URL) {
+        Write-Host "  ${Script:CYAN}Proxy configured: $($Script:PROXY_URL)${Script:NC}"
+        Write-Host "  ${Script:DIM}Skipping direct DNS/TCP tests (traffic goes through proxy)${Script:NC}"
+        Write-Host ""
+    } else {
+        # STEP 1: DNS Resolution Test
+        Write-Host "${Script:YELLOW}[STEP 1/3] Testing DNS Resolution...${Script:NC}"
+        try {
+            $dnsResult = [System.Net.Dns]::GetHostAddresses($hostname)
+            if ($dnsResult.Count -gt 0) {
+                $dnsIp = $dnsResult[0].IPAddressToString
+                Write-Host "  ${Script:GREEN}$([char]0x2713) DNS resolved: $hostname -> $dnsIp${Script:NC}"
+            } else {
+                Write-Host "  ${Script:RED}$([char]0x2717) DNS FAILED: Cannot resolve $hostname${Script:NC}"
+                Write-Error2 "DNS resolution failed for $hostname"
+                return $false
+            }
+        }
+        catch {
             Write-Host "  ${Script:RED}$([char]0x2717) DNS FAILED: Cannot resolve $hostname${Script:NC}"
+            Write-Host "  ${Script:DIM}Error: $($_.Exception.Message)${Script:NC}"
             Write-Error2 "DNS resolution failed for $hostname"
             return $false
         }
-    }
-    catch {
-        Write-Host "  ${Script:RED}$([char]0x2717) DNS FAILED: Cannot resolve $hostname${Script:NC}"
-        Write-Host "  ${Script:DIM}Error: $($_.Exception.Message)${Script:NC}"
-        Write-Error2 "DNS resolution failed for $hostname"
-        return $false
-    }
-    Write-Host ""
+        Write-Host ""
 
-    # =========================================================================
-    # STEP 2: TCP Port Connectivity Test
-    # =========================================================================
-    Write-Host "${Script:YELLOW}[STEP 2/3] Testing TCP Connection to Port 8089...${Script:NC}"
-    try {
-        $tcp = New-Object System.Net.Sockets.TcpClient
-        $connectTask = $tcp.ConnectAsync($hostname, 8089)
-        if ($connectTask.Wait(10000)) {
-            Write-Host "  ${Script:GREEN}$([char]0x2713) TCP port 8089 is OPEN${Script:NC}"
-        } else {
-            Write-Host "  ${Script:RED}$([char]0x2717) TCP port 8089 is BLOCKED or UNREACHABLE (timeout)${Script:NC}"
-            Write-Host ""
-            Write-Host "  ${Script:YELLOW}This usually means:${Script:NC}"
-            Write-Host "  ${Script:DIM}  - Corporate firewall blocking outbound port 8089${Script:NC}"
-            Write-Host "  ${Script:DIM}  - VPN blocking non-standard ports${Script:NC}"
-            Write-Host "  ${Script:DIM}  - Network security policy${Script:NC}"
+        # STEP 2: TCP Port Connectivity Test
+        Write-Host "${Script:YELLOW}[STEP 2/3] Testing TCP Connection to Port 8089...${Script:NC}"
+        try {
+            $tcp = New-Object System.Net.Sockets.TcpClient
+            $connectTask = $tcp.ConnectAsync($hostname, 8089)
+            if ($connectTask.Wait(10000)) {
+                Write-Host "  ${Script:GREEN}$([char]0x2713) TCP port 8089 is OPEN${Script:NC}"
+            } else {
+                Write-Host "  ${Script:RED}$([char]0x2717) TCP port 8089 is BLOCKED or UNREACHABLE (timeout)${Script:NC}"
+                Write-Host ""
+                Write-Host "  ${Script:YELLOW}This usually means:${Script:NC}"
+                Write-Host "  ${Script:DIM}  - Corporate firewall blocking outbound port 8089${Script:NC}"
+                Write-Host "  ${Script:DIM}  - VPN blocking non-standard ports${Script:NC}"
+                Write-Host "  ${Script:DIM}  - Network security policy${Script:NC}"
+            }
+            $tcp.Close()
         }
-        $tcp.Close()
+        catch {
+            Write-Host "  ${Script:RED}$([char]0x2717) TCP port 8089 connection failed${Script:NC}"
+            Write-Host "  ${Script:DIM}Error: $($_.Exception.Message)${Script:NC}"
+        }
+        Write-Host ""
     }
-    catch {
-        Write-Host "  ${Script:RED}$([char]0x2717) TCP port 8089 connection failed${Script:NC}"
-        Write-Host "  ${Script:DIM}Error: $($_.Exception.Message)${Script:NC}"
-    }
-    Write-Host ""
 
     # =========================================================================
     # STEP 3: Full HTTPS Connection Test
@@ -1449,6 +1491,9 @@ function Test-SplunkConnectivity {
         }
         if ($Script:IsPSCore) {
             $webParams["SkipCertificateCheck"] = $true
+        }
+        if ($Script:PROXY_URL) {
+            $webParams["Proxy"] = $Script:PROXY_URL
         }
 
         $webResponse = Invoke-WebRequest @webParams
@@ -1509,6 +1554,9 @@ function Connect-SplunkCloud {
             if ($Script:IsPSCore) {
                 $webParams["SkipCertificateCheck"] = $true
             }
+            if ($Script:PROXY_URL) {
+                $webParams["Proxy"] = $Script:PROXY_URL
+            }
 
             $response = Invoke-WebRequest @webParams
             $data = $response.Content | ConvertFrom-Json
@@ -1540,6 +1588,9 @@ function Connect-SplunkCloud {
             }
             if ($Script:IsPSCore) {
                 $webParams["SkipCertificateCheck"] = $true
+            }
+            if ($Script:PROXY_URL) {
+                $webParams["Proxy"] = $Script:PROXY_URL
             }
 
             $response = Invoke-WebRequest @webParams
@@ -1779,6 +1830,31 @@ function Get-SplunkStack {
     }
 
     Write-BoxFooter
+}
+
+# =============================================================================
+# INTERACTIVE WIZARD - PROXY SETTINGS (v4.3.0)
+# =============================================================================
+
+function Get-ProxySettings {
+    if ($Script:NON_INTERACTIVE) { return }
+    if ($Script:PROXY_URL) { return }  # Already set via -Proxy parameter
+
+    Write-Host ""
+    Write-Host -NoNewline "  ${Script:YELLOW}Does your environment require a proxy server to connect to Splunk Cloud? (y/N): ${Script:NC}"
+    $proxyAnswer = Read-Host
+    if ($proxyAnswer -match '^[Yy]') {
+        Write-Host -NoNewline "  ${Script:YELLOW}Enter proxy URL (e.g., http://proxy.company.com:8080): ${Script:NC}"
+        $Script:PROXY_URL = Read-Host
+        if ($Script:PROXY_URL) {
+            Write-Success "Proxy configured: $($Script:PROXY_URL)"
+        } else {
+            Write-Info "No proxy URL entered - connecting directly"
+        }
+    } else {
+        Write-Info "No proxy required - connecting directly"
+    }
+    Write-Host ""
 }
 
 # =============================================================================
@@ -4577,6 +4653,133 @@ function Show-ExportSummary {
 }
 
 # =============================================================================
+# RESUME SUPPORT (v4.3.0)
+# =============================================================================
+
+function Resume-FromArchive {
+    param([string]$ArchivePath)
+
+    if (-not (Test-Path $ArchivePath)) {
+        Write-Error2 "Resume archive not found: $ArchivePath"
+        exit 1
+    }
+
+    Write-Progress2 "Extracting previous export archive for resume..."
+
+    # Get the directory name inside the archive
+    $tarOutput = & tar.exe -tzf $ArchivePath 2>$null | Select-Object -First 1
+    if (-not $tarOutput) {
+        Write-Error2 "Could not determine export directory from archive"
+        exit 1
+    }
+    $dirName = ($tarOutput -split '/')[0]
+
+    if (-not $dirName) {
+        Write-Error2 "Could not determine export directory from archive"
+        exit 1
+    }
+
+    $targetDir = Join-Path (Get-Location) $dirName
+
+    # Check if directory already exists
+    if (Test-Path $targetDir) {
+        Write-Warning2 "Directory $dirName already exists - using existing directory"
+    } else {
+        # Extract the archive
+        & tar.exe -xzf $ArchivePath 2>$null
+
+        if (-not (Test-Path $targetDir)) {
+            Write-Error2 "Failed to extract archive - directory $dirName not found"
+            exit 1
+        }
+    }
+
+    # Set globals to match the extracted export
+    $Script:EXPORT_NAME = $dirName
+    $Script:EXPORT_DIR = $targetDir
+    $Script:LOG_FILE = Join-Path $Script:EXPORT_DIR "_export.log"
+
+    # Re-initialize debug log path if debug mode
+    if ($Script:DEBUG_MODE) {
+        $Script:DEBUG_LOG_FILE = Join-Path $Script:EXPORT_DIR "_export_debug.log"
+    }
+
+    Write-Log "=== RESUME MODE ==="
+    Write-Log "Resumed from archive: $ArchivePath"
+    Write-Log "Export directory: $($Script:EXPORT_DIR)"
+
+    Write-Success "Extracted previous export: $dirName"
+}
+
+function Test-HasCollectedData {
+    param([string]$CheckType)
+
+    switch ($CheckType) {
+        "system_info" {
+            $file = Join-Path $Script:EXPORT_DIR "dynabridge_analytics/system_info/server_info.json"
+            return (Test-Path $file) -and ((Get-Item $file).Length -gt 0)
+        }
+        "configurations" {
+            $configDir = Join-Path $Script:EXPORT_DIR "_configs"
+            if (-not (Test-Path $configDir)) { return $false }
+            return @(Get-ChildItem -Path $configDir -Filter "*.json" -File -ErrorAction SilentlyContinue).Count -gt 0
+        }
+        "dashboards" {
+            foreach ($app in $Script:SELECTED_APPS) {
+                $dashDir = Join-Path $Script:EXPORT_DIR "$app/dashboards"
+                if (Test-Path $dashDir) {
+                    $count = @(Get-ChildItem -Path $dashDir -Filter "*.json" -File -Recurse -ErrorAction SilentlyContinue).Count
+                    if ($count -gt 0) { return $true }
+                }
+            }
+            return $false
+        }
+        "alerts" {
+            foreach ($app in $Script:SELECTED_APPS) {
+                $file = Join-Path $Script:EXPORT_DIR "$app/savedsearches.json"
+                if ((Test-Path $file) -and ((Get-Item $file).Length -gt 0)) { return $true }
+            }
+            return $false
+        }
+        "rbac" {
+            $file = Join-Path $Script:EXPORT_DIR "dynabridge_analytics/rbac/users.json"
+            return (Test-Path $file) -and ((Get-Item $file).Length -gt 0)
+        }
+        "knowledge_objects" {
+            foreach ($app in $Script:SELECTED_APPS) {
+                $appDir = Join-Path $Script:EXPORT_DIR $app
+                if (Test-Path $appDir) {
+                    $files = Get-ChildItem -Path $appDir -Filter "*.json" -File -ErrorAction SilentlyContinue |
+                             Where-Object { $_.DirectoryName -notlike "*dashboards*" -and $_.Name -ne "savedsearches.json" -and $_.DirectoryName -notlike "*splunk-analysis*" }
+                    if (@($files).Count -gt 0) { return $true }
+                }
+            }
+            return $false
+        }
+        "app_analytics" {
+            foreach ($app in $Script:SELECTED_APPS) {
+                $analysisDir = Join-Path $Script:EXPORT_DIR "$app/splunk-analysis"
+                if (Test-Path $analysisDir) {
+                    $count = @(Get-ChildItem -Path $analysisDir -Filter "*.json" -File -ErrorAction SilentlyContinue).Count
+                    if ($count -gt 0) { return $true }
+                }
+            }
+            return $false
+        }
+        "usage_analytics" {
+            $usageDir = Join-Path $Script:EXPORT_DIR "dynabridge_analytics/usage_analytics"
+            if (-not (Test-Path $usageDir)) { return $false }
+            return @(Get-ChildItem -Path $usageDir -Filter "*.json" -File -Recurse -ErrorAction SilentlyContinue).Count -gt 0
+        }
+        "indexes" {
+            $file = Join-Path $Script:EXPORT_DIR "dynabridge_analytics/indexes/indexes.json"
+            return (Test-Path $file) -and ((Get-Item $file).Length -gt 0)
+        }
+        default { return $false }
+    }
+}
+
+# =============================================================================
 # COLLECTION ORCHESTRATOR
 # =============================================================================
 
@@ -4584,65 +4787,135 @@ function Start-Collection {
     Write-BoxHeader "STEP 6: DATA COLLECTION"
 
     Write-Host ""
+
+    if ($Script:RESUME_MODE) {
+        Write-Info "RESUME MODE - skipping previously collected data"
+        Write-Host ""
+    }
+
     Write-Info "Starting data collection..."
     Write-Host ""
 
-    Initialize-ExportDirectory
+    # In resume mode, use existing directory; otherwise create new one
+    if (-not $Script:RESUME_MODE) {
+        Initialize-ExportDirectory
+    }
 
     $totalSteps = 9
     $currentStep = 0
+    $skipped = 0
+    $collected = 0
 
     # System info
     $currentStep++
-    Write-Host "  [$currentStep/$totalSteps] Collecting server information..."
-    Export-SystemInfo
+    if ($Script:RESUME_MODE -and (Test-HasCollectedData "system_info")) {
+        Write-Host "  [$currentStep/$totalSteps] Server information... ${Script:GREEN}SKIP (already collected)${Script:NC}"
+        $skipped++
+    } else {
+        Write-Host "  [$currentStep/$totalSteps] Collecting server information..."
+        Export-SystemInfo
+        $collected++
+    }
 
     # Configurations
     $currentStep++
-    Write-Host "  [$currentStep/$totalSteps] Collecting configurations..."
-    Export-Configurations
+    if ($Script:RESUME_MODE -and (Test-HasCollectedData "configurations")) {
+        Write-Host "  [$currentStep/$totalSteps] Configurations... ${Script:GREEN}SKIP (already collected)${Script:NC}"
+        $skipped++
+    } else {
+        Write-Host "  [$currentStep/$totalSteps] Collecting configurations..."
+        Export-Configurations
+        $collected++
+    }
 
     # Dashboards
     $currentStep++
-    Write-Host "  [$currentStep/$totalSteps] Collecting dashboards..."
-    Export-Dashboards
+    if ($Script:RESUME_MODE -and (Test-HasCollectedData "dashboards")) {
+        Write-Host "  [$currentStep/$totalSteps] Dashboards... ${Script:GREEN}SKIP (already collected)${Script:NC}"
+        $skipped++
+    } else {
+        Write-Host "  [$currentStep/$totalSteps] Collecting dashboards..."
+        Export-Dashboards
+        $collected++
+    }
 
     # Alerts
     $currentStep++
-    Write-Host "  [$currentStep/$totalSteps] Collecting alerts and saved searches..."
-    Export-Alerts
+    if ($Script:RESUME_MODE -and (Test-HasCollectedData "alerts")) {
+        Write-Host "  [$currentStep/$totalSteps] Alerts and saved searches... ${Script:GREEN}SKIP (already collected)${Script:NC}"
+        $skipped++
+    } else {
+        Write-Host "  [$currentStep/$totalSteps] Collecting alerts and saved searches..."
+        Export-Alerts
+        $collected++
+    }
 
     # RBAC
     $currentStep++
-    Write-Host "  [$currentStep/$totalSteps] Collecting users and roles..."
-    Export-RbacData
+    if ($Script:RESUME_MODE -and (Test-HasCollectedData "rbac")) {
+        Write-Host "  [$currentStep/$totalSteps] Users and roles... ${Script:GREEN}SKIP (already collected)${Script:NC}"
+        $skipped++
+    } else {
+        Write-Host "  [$currentStep/$totalSteps] Collecting users and roles..."
+        Export-RbacData
+        $collected++
+    }
 
     # Knowledge objects
     $currentStep++
-    Write-Host "  [$currentStep/$totalSteps] Collecting knowledge objects..."
-    Export-KnowledgeObjects
+    if ($Script:RESUME_MODE -and (Test-HasCollectedData "knowledge_objects")) {
+        Write-Host "  [$currentStep/$totalSteps] Knowledge objects... ${Script:GREEN}SKIP (already collected)${Script:NC}"
+        $skipped++
+    } else {
+        Write-Host "  [$currentStep/$totalSteps] Collecting knowledge objects..."
+        Export-KnowledgeObjects
+        $collected++
+    }
 
     # App-scoped analytics
     $currentStep++
-    Write-Host "  [$currentStep/$totalSteps] Collecting app-scoped analytics..."
-    if ($Script:COLLECT_USAGE) {
-        foreach ($app in $Script:SELECTED_APPS) {
-            if (Test-Path (Join-Path $Script:EXPORT_DIR $app)) {
-                Export-AppAnalytics -AppName $app
+    if ($Script:RESUME_MODE -and (Test-HasCollectedData "app_analytics")) {
+        Write-Host "  [$currentStep/$totalSteps] App-scoped analytics... ${Script:GREEN}SKIP (already collected)${Script:NC}"
+        $skipped++
+    } else {
+        Write-Host "  [$currentStep/$totalSteps] Collecting app-scoped analytics..."
+        if ($Script:COLLECT_USAGE) {
+            foreach ($app in $Script:SELECTED_APPS) {
+                if (Test-Path (Join-Path $Script:EXPORT_DIR $app)) {
+                    Export-AppAnalytics -AppName $app
+                }
             }
+            Write-Success "App-scoped analytics collected (see each app's splunk-analysis/ folder)"
         }
-        Write-Success "App-scoped analytics collected (see each app's splunk-analysis/ folder)"
+        $collected++
     }
 
     # Global usage analytics
     $currentStep++
-    Write-Host "  [$currentStep/$totalSteps] Running global usage analytics..."
-    Export-UsageAnalytics
+    if ($Script:RESUME_MODE -and (Test-HasCollectedData "usage_analytics")) {
+        Write-Host "  [$currentStep/$totalSteps] Global usage analytics... ${Script:GREEN}SKIP (already collected)${Script:NC}"
+        $skipped++
+    } else {
+        Write-Host "  [$currentStep/$totalSteps] Running global usage analytics..."
+        Export-UsageAnalytics
+        $collected++
+    }
 
     # Indexes
     $currentStep++
-    Write-Host "  [$currentStep/$totalSteps] Collecting index information..."
-    Export-IndexData
+    if ($Script:RESUME_MODE -and (Test-HasCollectedData "indexes")) {
+        Write-Host "  [$currentStep/$totalSteps] Index information... ${Script:GREEN}SKIP (already collected)${Script:NC}"
+        $skipped++
+    } else {
+        Write-Host "  [$currentStep/$totalSteps] Collecting index information..."
+        Export-IndexData
+        $collected++
+    }
+
+    if ($Script:RESUME_MODE) {
+        Write-Host ""
+        Write-Info "Resume summary: $collected collected, $skipped skipped (already had data)"
+    }
 
     Write-Host ""
     Write-BoxFooter
@@ -4673,6 +4946,8 @@ function Invoke-Main {
         Write-Host "  -Output DIR         Output directory"
         Write-Host "  -Rbac               Collect RBAC/users data (OFF by default)"
         Write-Host "  -Usage              Collect usage analytics (OFF by default)"
+        Write-Host "  -Proxy URL          Route all connections through a proxy server (e.g., http://proxy:8080)"
+        Write-Host "  -ResumeCollect FILE Resume a previous interrupted export from a .tar.gz archive"
         Write-Host "  -SkipInternal       Skip searches requiring _internal index"
         Write-Host "  -Debug_Mode         Enable verbose debug logging"
         Write-Host "  -NonInteractive     Force non-interactive mode"
@@ -4684,6 +4959,11 @@ function Invoke-Main {
         Write-Host "  For large environments, use -Apps with specific apps:"
         Write-Host "    .\DynaBridge-SplunkCloudExport.ps1 -Stack acme.splunkcloud.com -Token XXX -Apps 'myapp'"
         return
+    }
+
+    # Handle resume mode - extract previous archive early
+    if ($Script:RESUME_MODE) {
+        Resume-FromArchive -ArchivePath $Script:RESUME_ARCHIVE
     }
 
     # Determine interactive vs non-interactive mode
@@ -4735,6 +5015,7 @@ function Invoke-Main {
             Write-Info "  Apps:  all (will fetch from API)"
         }
         if ($Script:SCOPE_TO_APPS) { Write-Info "  Mode:  App-scoped analytics" }
+        if ($Script:PROXY_URL) { Write-Info "  Proxy: $($Script:PROXY_URL)" }
         if ($Script:DEBUG_MODE) { Write-Info "  Debug: ENABLED (verbose logging)" }
         if ($Script:COLLECT_RBAC) { Write-Info "  RBAC:  ENABLED" } else { Write-Info "  RBAC:  DISABLED (use -Rbac to enable)" }
         if ($Script:COLLECT_USAGE) { Write-Info "  Usage: ENABLED" } else { Write-Info "  Usage: DISABLED (use -Usage to enable)" }
@@ -4787,6 +5068,7 @@ function Invoke-Main {
         Show-Introduction
         Show-PreflightChecklist
         Get-SplunkStack
+        Get-ProxySettings
         Get-Authentication
         Find-SplunkEnvironment
         Select-Applications
@@ -4828,6 +5110,18 @@ function Invoke-Main {
         New-TroubleshootingReport
     }
 
+    # v4.3.0: Versioned archive naming for resumed exports
+    $originalExportName = $null
+    if ($Script:RESUME_MODE) {
+        $version = 2
+        while ((Test-Path "$($Script:EXPORT_NAME)-v${version}.tar.gz") -or (Test-Path "$($Script:EXPORT_NAME)-v${version}_masked.tar.gz")) {
+            $version++
+        }
+        $originalExportName = $Script:EXPORT_NAME
+        $Script:EXPORT_NAME = "$($originalExportName)-v${version}"
+        Write-Info "Resume archive will be named: $($Script:EXPORT_NAME).tar.gz"
+    }
+
     # v4.2.5: Two-archive approach for anonymization
     if ($Script:ANONYMIZE_DATA) {
         # Create original archive first, keeping EXPORT_DIR for masked copy
@@ -4838,6 +5132,11 @@ function Invoke-Main {
     } else {
         # No anonymization - just create single archive
         New-ExportArchive
+    }
+
+    # Restore original EXPORT_NAME if it was modified for versioning
+    if ($Script:RESUME_MODE -and $originalExportName) {
+        $Script:EXPORT_NAME = $originalExportName
     }
 
     # Show export timing statistics
