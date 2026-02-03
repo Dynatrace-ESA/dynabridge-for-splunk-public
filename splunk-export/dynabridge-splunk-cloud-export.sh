@@ -109,7 +109,7 @@ set -o pipefail  # Fail on pipe errors
 # SCRIPT CONFIGURATION
 # =============================================================================
 
-SCRIPT_VERSION="4.2.6"
+SCRIPT_VERSION="4.3.0"
 SCRIPT_NAME="DynaBridge Splunk Cloud Export"
 
 # ANSI color codes
